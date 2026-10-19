@@ -16,7 +16,8 @@ const routeCache = new TtlCache({ ttlMs: 300000, maxEntries: 200 });
 const providerCache = new TtlCache({ ttlMs: 300000, maxEntries: 200 });
 const tmdbCache = new TtlCache({ ttlMs: 86400000, maxEntries: 2000 });
 const providers = listConfiguredProviders({ cache: providerCache });
-const provider = providers[0];
+const tmdbProvider = providers.find((p) => p.getName() === "TMDB") || providers[0];
+const provider = tmdbProvider;
 const enricher = createTmdbEnricher({ apiKey: config.tmdbApiKey, cache: tmdbCache });
 const streamManager = createStreamManager({
   ffmpegPath: config.ffmpegPath,
@@ -67,7 +68,7 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.use("/api/home", homeRouter({ provider, enricher, cache: routeCache }));
+app.use("/api/home", homeRouter({ tmdbProvider, provider, enricher, cache: routeCache }));
 app.use("/api", searchRouter({ provider, enricher, cache: routeCache }));
 app.use("/api", detailRouter({ provider, cache: routeCache, providerOptions: { cache: providerCache } }));
 app.use(

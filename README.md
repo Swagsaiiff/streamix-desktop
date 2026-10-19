@@ -105,11 +105,42 @@ This script:
 
 ---
 
-## Providers & Upstream Limitations
+---
 
-- **CineStream:** Fully operational for top movies, popular series, catalog browsing, metadata, and search.
-- **VegaMovies:** Provider extraction engine, base64 decoders, HTML link parser, and token chain are implemented and verified via automated test fixtures. Live upstream resolution depends on reachable third-party mirror domains (mirror domains frequently change or experience Cloudflare challenges). When an external mirror is unreachable, the application gracefully reports provider errors without crashing.
-- **TMDB Enrichment:** Optional. TMDB metadata enrichment is enabled when a valid `TMDB_API_KEY` is provided in `.env`.
+## TMDB Catalog & Configuration
+
+STREAMIX uses the **TMDB (The Movie Database) API** as the authoritative source for the homepage catalog (trending movies, popular movies, new releases, top-rated movies, genre categories, popular series, action series, and anime sections) and title metadata.
+
+### Obtaining a TMDB API Key
+1. Create a free account at [themoviedb.org](https://www.themoviedb.org/).
+2. Navigate to **Settings > API** ([themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)) and generate a v3 API Key.
+
+### Configuring the API Key
+
+- **Development:**
+  Add your API key to `.env` in the repository root:
+  ```env
+  TMDB_API_KEY=your_tmdb_api_key_here
+  ```
+- **Packaged Desktop Application:**
+  Create or edit `config.json` in your local user data directory (`%APPDATA%\streamix-desktop\config.json`):
+  ```json
+  {
+    "tmdbApiKey": "your_tmdb_api_key_here"
+  }
+  ```
+  Alternatively, place a `.env` file containing `TMDB_API_KEY=your_tmdb_api_key_here` inside `%APPDATA%\streamix-desktop\`.
+
+### TMDB Attribution
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+---
+
+## Providers & Upstream Resolution
+
+- **TMDB:** Primary homepage catalog source and authoritative movie/series metadata provider.
+- **VegaMovies:** Media extraction provider for resolving real video streams and multi-quality variants. Playback requests for TMDB-cataloged titles bridge metadata (title, year, season, episode) to VegaMovies's title-based resolution.
+- **CineStream:** Available in the provider registry for compatibility and legacy catalog lookups.
 
 ---
 

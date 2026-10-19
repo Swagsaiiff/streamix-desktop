@@ -327,6 +327,36 @@ export default function App() {
         />
       )}
       {player && <Player item={player} onClose={closePlayer} onProgress={refreshProgress} />}
+
+      <footer className="app-footer" role="contentinfo">
+        <div className="tmdb-attribution">
+          <a
+            href="https://www.themoviedb.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="tmdb-logo-link"
+            aria-label="The Movie Database (TMDB)"
+          >
+            <svg
+              className="tmdb-logo"
+              viewBox="0 0 185 14"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              height="16"
+              aria-hidden="true"
+            >
+              <path
+                d="M7.74 0H0v3.08h2.32v10.74h3.1V3.08h2.32V0zm17.9 0l-3.3 8.35L19.04 0h-3.95v13.82h2.95V4.65l2.97 7.22h2.64l2.97-7.22v9.17h2.95V0h-3.93zm16.89 0h-7.07v13.82h6.8c3.95 0 6.44-2.22 6.44-6.91 0-4.69-2.49-6.91-6.17-6.91zm-.43 10.74h-3.54V3.08h3.54c2.25 0 3.32 1.35 3.32 3.83 0 2.48-1.07 3.83-3.32 3.83zm22.42-4.73c2.08-.47 3.25-1.74 3.25-3.66C67.77 0 65.65 0 62.46 0h-6.73v13.82h7.32c3.48 0 5.83-.34 5.83-3.83 0-1.89-1.31-3.26-4.36-3.98zm-3.8-2.93h-3.08V2.73h3.08c1.37 0 2.22.47 2.22 1.54 0 1.07-.85 1.54-2.22 1.54zm.64 7.66h-3.72V7.93h3.72c1.47 0 2.37.52 2.37 1.63 0 1.11-.9 1.63-2.37 1.63z"
+                fill="#01B4E4"
+              />
+            </svg>
+          </a>
+          <p className="tmdb-notice">
+            This product uses the TMDB API but is not endorsed or certified by TMDB.
+          </p>
+        </div>
+      </footer>
     </main>
   );
 }
+

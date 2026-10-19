@@ -4,136 +4,157 @@ import { logger } from "../logger.js";
 
 const ROW_LIMIT = 24;
 const CACHE_TTL_MS = 300000;
-const PROVIDER_RANKING = "CineStream top catalog";
 
-function sortByRating(items) {
-  return [...items].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
-}
-
-function sortByYear(items) {
-  return [...items].filter((item) => item.year != null).sort((a, b) => b.year - a.year);
-}
-
-function sortByPopularity(items) {
-  return [...items].sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0));
-}
-
-function buildRows(provider) {
+function buildRows(tmdbProvider) {
   return [
     {
       key: "trending",
       title: "Trending Movies",
-      ranking: `${PROVIDER_RANKING}, ordered by the provider's own popularity metric`,
-      fetch: () => provider.getTopMovies(3)
+      ranking: "TMDB trending movies of the week",
+      fetch: () => tmdbProvider.getTrendingMovies(ROW_LIMIT)
     },
     {
       key: "popular-movies",
       title: "Popular Movies",
-      ranking: `${PROVIDER_RANKING} (next popularity band, pages 3-6)`,
-      fetch: async () => sortByPopularity(await provider.getTopMovies(4, 147))
+      ranking: "TMDB popular movies",
+      fetch: () => tmdbProvider.getPopularMovies(ROW_LIMIT)
     },
     {
       key: "new-releases",
       title: "New Releases",
-      ranking: `${PROVIDER_RANKING}, newest-first by release year (provider exposes no dedicated latest feed)`,
-      fetch: async () => sortByYear(await provider.getTopMovies(4, 343))
+      ranking: "TMDB movies currently in theatres and on release",
+      fetch: () => tmdbProvider.getNewReleases(ROW_LIMIT)
     },
     {
       key: "top-rated",
       title: "Top Rated Movies",
-      ranking: `${PROVIDER_RANKING}, sorted by industry rating (IMDb) descending`,
-      fetch: async () => sortByRating(await provider.getTopMovies(4, 539))
+      ranking: "TMDB highest-rated movies of all time",
+      fetch: () => tmdbProvider.getTopRatedMovies(ROW_LIMIT)
     },
     {
       key: "action",
       title: "Action Movies",
-      ranking: `${PROVIDER_RANKING} filtered by the provider's Action genre`,
-      fetch: () => provider.getCatalogByGenre("movie", "Action", 2)
+      ranking: "TMDB Action movies catalog",
+      fetch: () => tmdbProvider.getActionMovies(ROW_LIMIT)
     },
     {
       key: "comedy",
       title: "Comedy Movies",
-      ranking: `${PROVIDER_RANKING} filtered by the provider's Comedy genre`,
-      fetch: () => provider.getCatalogByGenre("movie", "Comedy", 2)
+      ranking: "TMDB Comedy movies catalog",
+      fetch: () => tmdbProvider.getComedyMovies(ROW_LIMIT)
     },
     {
       key: "horror",
       title: "Horror Movies",
-      ranking: `${PROVIDER_RANKING} filtered by the provider's Horror genre`,
-      fetch: () => provider.getCatalogByGenre("movie", "Horror", 2)
+      ranking: "TMDB Horror movies catalog",
+      fetch: () => tmdbProvider.getHorrorMovies(ROW_LIMIT)
     },
     {
       key: "popular-series",
       title: "Popular Series",
-      ranking: `${PROVIDER_RANKING}, series catalog ordered by the provider's own popularity metric`,
-      fetch: () => provider.getTopSeries(3)
+      ranking: "TMDB popular TV series",
+      fetch: () => tmdbProvider.getPopularSeries(ROW_LIMIT)
     },
     {
       key: "action-series",
       title: "Action Series",
-      ranking: `${PROVIDER_RANKING}, series catalog filtered by the provider's Action genre`,
-      fetch: () => provider.getCatalogByGenre("series", "Action", 2)
+      ranking: "TMDB Action & Adventure TV series catalog",
+      fetch: () => tmdbProvider.getActionSeries(ROW_LIMIT)
     },
     {
       key: "anime-airing",
       title: "Airing Anime",
-      ranking: "Kitsu anime catalog (kitsu-anime-airing) served by the provider",
-      fetch: () => provider.getKitsuCatalog("kitsu-anime-airing", 2)
+      ranking: "TMDB Japanese animation currently airing or recent",
+      fetch: () => tmdbProvider.getAnimeAiring(ROW_LIMIT)
     },
     {
       key: "anime-trending",
       title: "Trending Anime",
-      ranking: "Kitsu anime catalog (kitsu-anime-trending) served by the provider",
-      fetch: () => provider.getKitsuCatalog("kitsu-anime-trending", 2)
+      ranking: "TMDB popular Japanese animation",
+      fetch: () => tmdbProvider.getAnimeTrending(ROW_LIMIT)
     }
   ];
 }
 
-async function loadRow(row, seen) {
+async function loadRow(row) {
   const items = await row.fetch();
+  const seen = new Set();
   const unique = [];
   for (const item of items) {
-    const dedupeKey = `${item.type}:${String(item.title ?? "").toLowerCase()}:${item.year ?? ""}`;
+    const dedupeKey = `${item.type}:${item.tmdbId ?? item.id}`;
     if (!item.id || seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    unique.push(item);
+    unique.push({
+      ...item,
+      provider: "TMDB",
+      source: "TMDB"
+    });
     if (unique.length >= ROW_LIMIT) break;
   }
   return {
     key: row.key,
     title: row.title,
     ranking: row.ranking,
-    provider: "CineStream",
+    provider: "TMDB",
     count: unique.length,
     items: unique
   };
 }
 
-export function homeRouter({ provider, enricher, cache }) {
+export function homeRouter({ tmdbProvider, provider, cache }) {
   const router = Router();
-  const rows = buildRows(provider);
+  const activeProvider = tmdbProvider ?? (provider?.getName() === "TMDB" ? provider : null);
 
   async function serveRows(requestedKeys, res, cacheKey) {
+    if (!activeProvider || !activeProvider.isConfigured?.()) {
+      return res.status(503).json({
+        error: "configuration_error",
+        code: "missing_tmdb_api_key",
+        message: "TMDB API key is not configured. Configure TMDB_API_KEY in .env or application settings.",
+        hint: "Get a free API key from https://www.themoviedb.org/settings/api and add TMDB_API_KEY=<your_key> to .env or desktop config."
+      });
+    }
+
     const cached = cache.get(cacheKey);
     if (cached) return res.json({ ...cached, cached: true });
 
+    const rows = buildRows(activeProvider);
     const selected = requestedKeys ? rows.filter((row) => requestedKeys.includes(row.key)) : rows;
-    const seen = new Set();
-    const results = await Promise.allSettled(selected.map((row) => loadRow(row, seen)));
+    const results = await Promise.allSettled(selected.map((row) => loadRow(row)));
     const loaded = [];
     const failures = [];
+
     results.forEach((result, index) => {
-      if (result.status === "fulfilled") loaded.push(result.value);
-      else {
-        failures.push({ key: selected[index].key, message: result.reason?.message ?? "failed" });
-        logger.warn("home.row_failed", { key: selected[index].key, code: result.reason?.code ?? "error" });
+      if (result.status === "fulfilled") {
+        loaded.push(result.value);
+      } else {
+        const reason = result.reason;
+        const code = reason?.code ?? "error";
+        failures.push({
+          key: selected[index].key,
+          code,
+          message: reason?.message ?? "failed"
+        });
+        logger.warn("home.row_failed", { key: selected[index].key, code, message: reason?.message });
       }
     });
 
     if (loaded.length === 0) {
+      const unauthorizedFailure = failures.find(
+        (f) => f.code === "unauthorized" || (f.message && f.message.includes("401"))
+      );
+      if (unauthorizedFailure) {
+        return res.status(401).json({
+          error: "configuration_error",
+          code: "invalid_tmdb_api_key",
+          message: "TMDB API key is invalid or unauthorized (HTTP 401). Please verify your TMDB_API_KEY.",
+          hint: "Check your TMDB_API_KEY in .env or desktop config."
+        });
+      }
+
       const stale = cache.get(cacheKey);
       if (stale) return res.json({ ...stale, cached: true, stale: true });
-      return sendError(res, new Error("all home rows failed"));
+      return sendError(res, new Error("all home rows failed: " + (failures[0]?.message ?? "TMDB request failed")));
     }
 
     const body = {
@@ -179,7 +200,7 @@ export function homeRouter({ provider, enricher, cache }) {
     });
   }
 
-  // Backwards-compatible alias: the old "latest" row is now "New Releases".
+  // Backwards-compatible alias: "latest" -> "new-releases"
   router.get("/latest", async (_req, res) => {
     try {
       return await serveRows(["new-releases"], res, "route:home:new-releases");

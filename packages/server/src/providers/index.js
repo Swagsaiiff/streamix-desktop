@@ -1,8 +1,10 @@
+import { TMDBProvider } from "./tmdb.js";
 import { CineStreamProvider } from "./cinemeta.js";
 import { VegaMoviesProvider } from "./vegamovies.js";
 import { ProviderError } from "./base.js";
 
 const registry = new Map([
+  ["TMDB", TMDBProvider],
   ["CineStream", CineStreamProvider],
   ["VegaMovies", VegaMoviesProvider]
 ]);
@@ -29,7 +31,7 @@ function recordOutcome(providerName, outcome) {
   telemetry.set(providerName, entry);
 }
 
-export function createProvider(name = "CineStream", options = {}) {
+export function createProvider(name = "TMDB", options = {}) {
   const ProviderClass = registry.get(name);
   if (!ProviderClass) {
     throw new ProviderError(`unknown provider: ${name}`, "unsupported");

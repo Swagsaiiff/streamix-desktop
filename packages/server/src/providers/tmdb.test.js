@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchesYear, createTmdbEnricher, mapWithConcurrency } from "./tmdb.js";
+import { matchesYear, createTmdbEnricher, mapWithConcurrency, TMDBProvider, getTmdbImageUrl } from "./tmdb.js";
+import { ProviderError } from "./base.js";
 
 test("matchesYear within tolerance", () => {
   assert.equal(matchesYear(2008, 2009), true);
@@ -46,5 +47,82 @@ test("mapWithConcurrency propagates rejected items", async () => {
         return value;
       }),
     /boom/
+  );
+});
+
+test("getTmdbImageUrl formats proper image urls", () => {
+  assert.equal(getTmdbImageUrl(null), null);
+  assert.equal(getTmdbImageUrl("/path.jpg", "w500"), "https://image.tmdb.org/t/p/w500/path.jpg");
+  assert.equal(getTmdbImageUrl("https://custom.cdn/img.jpg"), "https://custom.cdn/img.jpg");
+});
+
+test("TMDBProvider reports correct capabilities and configuration state", () => {
+  const unconfigured = new TMDBProvider({ apiKey: "" });
+  assert.equal(unconfigured.getName(), "TMDB");
+  assert.equal(unconfigured.isConfigured(), false);
+  const caps = unconfigured.getCapabilities();
+  assert.equal(caps.supportsHomePage, true);
+  assert.equal(caps.supportsSearch, true);
+  assert.equal(caps.supportsDetail, true);
+  assert.equal(caps.supportsStreamResolution, false);
+
+  const configured = new TMDBProvider({ apiKey: "test_key_123" });
+  assert.equal(configured.isConfigured(), true);
+});
+
+test("TMDBProvider.normalizeItem produces complete normalized item model", () => {
+  const provider = new TMDBProvider({ apiKey: "dummy" });
+  const genreMap = new Map([
+    [28, "Action"],
+    [12, "Adventure"]
+  ]);
+
+  const rawMovie = {
+    id: 12345,
+    title: "Test Movie",
+    release_date: "2024-06-15",
+    poster_path: "/poster.jpg",
+    backdrop_path: "/backdrop.jpg",
+    overview: "A test synopsis",
+    vote_average: 8.35,
+    popularity: 145.2,
+    genre_ids: [28, 12]
+  };
+
+  const normalized = provider.normalizeItem(rawMovie, "movie", genreMap);
+  assert.equal(normalized.id, "12345");
+  assert.equal(normalized.tmdbId, 12345);
+  assert.equal(normalized.type, "movie");
+  assert.equal(normalized.provider, "TMDB");
+  assert.equal(normalized.source, "TMDB");
+  assert.equal(normalized.title, "Test Movie");
+  assert.equal(normalized.year, 2024);
+  assert.equal(normalized.poster, "https://image.tmdb.org/t/p/w500/poster.jpg");
+  assert.equal(normalized.backdrop, "https://image.tmdb.org/t/p/original/backdrop.jpg");
+  assert.equal(normalized.overview, "A test synopsis");
+  assert.equal(normalized.rating, 8.4);
+  assert.deepEqual(normalized.genres, ["Action", "Adventure"]);
+});
+
+test("TMDBProvider.normalizeItem safely handles missing fields", () => {
+  const provider = new TMDBProvider({ apiKey: "dummy" });
+  const rawEmpty = { id: 999 };
+  const normalized = provider.normalizeItem(rawEmpty, "movie");
+  assert.equal(normalized.id, "999");
+  assert.equal(normalized.tmdbId, 999);
+  assert.equal(normalized.title, "Untitled");
+  assert.equal(normalized.year, null);
+  assert.equal(normalized.poster, null);
+  assert.equal(normalized.backdrop, null);
+  assert.equal(normalized.overview, null);
+  assert.equal(normalized.rating, null);
+  assert.equal(normalized.genres, null);
+});
+
+test("TMDBProvider.request throws unauthorized error when unconfigured", async () => {
+  const provider = new TMDBProvider({ apiKey: "" });
+  await assert.rejects(
+    () => provider.request("/movie/popular"),
+    (err) => err instanceof ProviderError && err.code === "unauthorized"
   );
 });

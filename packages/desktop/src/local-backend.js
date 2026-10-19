@@ -1,6 +1,6 @@
 import { fork } from "node:child_process";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -71,11 +71,24 @@ export class LocalBackendService {
       throw new Error(`[local-backend] Could not find server script entry point.`);
     }
 
+    let userApiKey = null;
+    if (options.userDataPath) {
+      const userConfigPath = path.join(options.userDataPath, "config.json");
+      if (existsSync(userConfigPath)) {
+        try {
+          const parsed = JSON.parse(readFileSync(userConfigPath, "utf8"));
+          if (parsed.tmdbApiKey) userApiKey = parsed.tmdbApiKey;
+        } catch {}
+      }
+    }
+
     console.log(`[local-backend] Starting local backend: ${scriptPath}`);
     const env = {
       ...process.env,
       PORT: String(this.port),
       STREAMIX_TEMP_DIR: options.userDataPath ? path.join(options.userDataPath, "temp") : undefined,
+      STREAMIX_USER_DATA: options.userDataPath || undefined,
+      TMDB_API_KEY: userApiKey || process.env.TMDB_API_KEY || "",
       NODE_ENV: options.isDev ? "development" : "production"
     };
 
@@ -116,6 +129,10 @@ export class LocalBackendService {
       process.env.PORT = String(this.port);
       if (options.userDataPath) {
         process.env.STREAMIX_TEMP_DIR = path.join(options.userDataPath, "temp");
+        process.env.STREAMIX_USER_DATA = options.userDataPath;
+      }
+      if (userApiKey) {
+        process.env.TMDB_API_KEY = userApiKey;
       }
       try {
         await import(pathToFileURL(scriptPath).href);

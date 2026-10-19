@@ -1,17 +1,69 @@
-# STREAMIX — Progress
+## TMDB Homepage Catalog Integration (COMPLETED)
 
-## Current phase
+### Objective
+Make the TMDB API the actual source of STREAMIX's homepage movie and series catalogs (replacing CineStream as the homepage catalog source) while integrating cleanly with the existing application, details modal, search, and native MPV playback pipeline via the VegaMovies title-resolution bridge.
 
-Phase 7: Windows Packaging, Final Testing, and Release Preparation (COMPLETED).
+### Summary of Changes
+1. **Extended TMDB Service (`packages/server/src/providers/tmdb.js`):**
+   - Implemented `TMDBProvider` extending `BaseProvider` with official TMDB endpoints:
+     - `trending`: `/trending/movie/week`
+     - `popular-movies`: `/movie/popular`
+     - `new-releases`: `/movie/now_playing`
+     - `top-rated`: `/movie/top_rated`
+     - `action`: `/discover/movie?with_genres=28`
+     - `comedy`: `/discover/movie?with_genres=35`
+     - `horror`: `/discover/movie?with_genres=27`
+     - `popular-series`: `/tv/popular`
+     - `action-series`: `/discover/tv?with_genres=10759`
+     - `anime-airing`: `/discover/tv?with_genres=16&with_origin_country=JP&air_date.gte=...&air_date.lte=...`
+     - `anime-trending`: `/discover/tv?with_genres=16&with_origin_country=JP&sort_by=popularity.desc`
+   - Built cached genre maps for movies and TV (`/genre/movie/list` and `/genre/tv/list`).
+   - Implemented complete normalized content model (`id: String(tmdbId)`, `tmdbId`, `type`, `title`, `year`, `poster`, `backdrop`, `rating`, `popularity`, `genres`, `provider: "TMDB"`, `source: "TMDB"`).
+   - Implemented `getDetails(type, id)` for movies (with cast, director, runtime, genres, rating, overview) and TV series (with bounded concurrent loading of seasons and episodes matching `DetailModal` schema).
+   - Maintained full backwards compatibility with `matchesYear`, `mapWithConcurrency`, and `createTmdbEnricher`.
 
-### Phase 7 Summary
-- **Packaging:** Configured `electron-builder` with NSIS installer target for Windows x64.
-- **Installer Built:** `packages/desktop/dist/STREAMIX Setup 1.0.0.exe` (129,039,893 bytes / 123.06 MB).
-- **Embedded Components:** Electron 44.9.0 runtime, React 19 production bundle (`client-dist`), Express 5 local backend (`server`), and native MPV x64 portable binaries (`resources/mpv/mpv.exe`).
-- **Offline / Independent Execution:** Verified that Electron boots without Vite or development servers, starts the local backend service automatically, connects to `/api/health`, mounts React UI, and renders 264 cards from CineStream.
-- **Native MPV Playback & Multi-Audio:** Verified through automated IPC spike test (`node packages/desktop/src/spike-mpv.js`) covering playback, seeking, pause/resume, track enumeration, and switching between 2 distinct audio tracks (English -> Spanish).
-- **Test Suite:** 131/131 passing tests (97 backend + 34 frontend).
-- **Licensing & Documentation:** `LICENSE` created with ISC + third-party notices (MPV GPL/LGPL, Electron MIT); `README.md` comprehensively updated.
+2. **Provider Registry (`packages/server/src/providers/index.js`):**
+   - Registered `TMDBProvider` as `"TMDB"` in the provider registry.
+   - Updated `listConfiguredProviders` and `createProvider` defaults.
+
+3. **Homepage Routes (`packages/server/src/routes/home.js`):**
+   - Connected `GET /api/home` and individual section routes directly to `TMDBProvider`.
+   - Replaced CineStream catalog methods with real TMDB discovery endpoints.
+   - Per-row deduplication: deduplicates within each section by `${item.type}:${item.tmdbId ?? item.id}` without cross-row cannibalization.
+   - Honest error handling: returns actionable HTTP 503 (`missing_tmdb_api_key`) when unconfigured and HTTP 401 (`invalid_tmdb_api_key`) when unauthorized; never silently falls back to CineStream.
+
+4. **Configuration & Desktop App Support (`packages/server/src/config.js` & `packages/desktop/src/local-backend.js`):**
+   - Added user data directory config support (`%APPDATA%\streamix-desktop\config.json` or `.env`).
+   - Added upward searching for `.env` so development and packaged environments reliably discover keys.
+   - Passed `STREAMIX_USER_DATA` and `TMDB_API_KEY` from Electron main process to local backend.
+
+5. **Attribution & UI (`packages/client/src/App.jsx` & `packages/client/src/index.css`):**
+   - Added TMDB attribution footer with official TMDB logo SVG and mandatory disclaimer:
+     `"This product uses the TMDB API but is not endorsed or certified by TMDB."`
+   - Added responsive, styled footer CSS.
+
+6. **Documentation (`.env.example` & `README.md`):**
+   - Updated `.env.example` with clear TMDB API key instructions.
+   - Updated `README.md` with TMDB catalog configuration guide, desktop configuration instructions, and attribution notice.
+
+### Verification Performed
+- **Unit Test Suite:** `npm test` -> 136/136 tests passing (102 server tests + 34 client tests).
+- **Client Build:** `npm run build --workspace=packages/client` -> clean Vite build in 338ms.
+- **Server Endpoints Test:**
+  - `GET /api/home`: returned HTTP 200 with 11 TMDB rows (`trending`, `popular-movies`, `new-releases`, `top-rated`, `action`, `comedy`, `horror`, `popular-series`, `action-series`, `anime-airing`, `anime-trending`), all items populated with `provider: "TMDB"`, `tmdbId`, `year`, `rating`, `poster`, `backdrop`.
+  - `GET /api/detail/movie/1288069?provider=TMDB`: returned movie details (Tenzing, 126 min, cast, genres).
+  - `GET /api/detail/series/22980?provider=TMDB`: returned series details with 570 episodes across seasons.
+- **End-to-End Stream Resolution Bridge:**
+  - `POST /api/stream/series/117376?provider=TMDB&season=1&episode=1` (Vincenzo) resolved via title bridge `TMDB` -> `VegaMovies`, finding S01E01 1080p stream with 3 variants (`1080p`, `720p`, `480p`), returning HTTP 201 with created streaming session.
+- **Error Handling Verification:**
+  - Missing key -> HTTP 503 `configuration_error` (`missing_tmdb_api_key`) with actionable configuration hint.
+  - Invalid key -> HTTP 401 `configuration_error` (`invalid_tmdb_api_key`) with verification hint.
+- **Electron Automated Desktop Verification:**
+  - `npx electron packages/desktop --test-verification`: started local backend with `provider: "TMDB"`, connected to `/api/health`, mounted React UI, rendered 262 cards live from TMDB. Passed with `VERIFICATION_SUCCESS`.
+
+---
+
+## Phase 7: Windows Packaging, Final Testing, and Release Preparation (COMPLETED)
 
 ## Multi-provider search, search-result details, and real playback (verified)
 

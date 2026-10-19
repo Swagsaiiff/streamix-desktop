@@ -7,6 +7,12 @@ import { LocalBackendService } from "./local-backend.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
+try {
+  const envCandidate = path.join(repoRoot, ".env");
+  if (existsSync(envCandidate)) {
+    process.loadEnvFile(envCandidate);
+  }
+} catch {}
 const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 function resolveClientDist() {
