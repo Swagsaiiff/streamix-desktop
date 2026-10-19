@@ -9,6 +9,7 @@ import {
   explainQuality
 } from "../lib/quality.js";
 import { progressStore, clampPosition } from "../lib/progress.js";
+import { isDesktopEnvironment, createDesktopMpvAdapter } from "../lib/playbackAdapter.js";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const HIDE_DELAY_MS = 3000;
@@ -42,6 +43,7 @@ export default function Player({ item, onClose, onProgress }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
   const hlsRef = useRef(null);
+  const mpvAdapterRef = useRef(null);
   const sessionRef = useRef(null);
   const hideTimerRef = useRef(null);
   const saveTimerRef = useRef(0);
@@ -63,6 +65,8 @@ export default function Player({ item, onClose, onProgress }) {
   const [rate, setRate] = useState(1);
   const [audioTracks, setAudioTracks] = useState([]);
   const [activeTrack, setActiveTrack] = useState(null);
+  const [subtitleTracks, setSubtitleTracks] = useState([]);
+  const [activeSubtitle, setActiveSubtitle] = useState("no");
   const [levels, setLevels] = useState([]);
   const [activeLevel, setActiveLevel] = useState(AUTO_QUALITY);
   const [preferredLang, setPreferredLang] = useState(() => localStorage.getItem("streamix.lang") || "");
@@ -74,6 +78,7 @@ export default function Player({ item, onClose, onProgress }) {
   const [resumedFrom, setResumedFrom] = useState(null);
   const [ended, setEnded] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [isDesktop] = useState(() => isDesktopEnvironment());
 
   const queue = useMemo(() => buildEpisodeQueue(current), [current]);
   const queueIndex = useMemo(() => {
@@ -102,15 +107,14 @@ export default function Player({ item, onClose, onProgress }) {
 
   const persist = useCallback(
     (positionOverride, durationOverride) => {
-      const video = videoRef.current;
-      const dur = Number.isFinite(durationOverride) ? durationOverride : video?.duration;
-      const pos = Number.isFinite(positionOverride) ? positionOverride : video?.currentTime;
+      const dur = Number.isFinite(durationOverride) ? durationOverride : duration;
+      const pos = Number.isFinite(positionOverride) ? positionOverride : currentTime;
       if (!Number.isFinite(dur) || dur <= 0 || !Number.isFinite(pos)) return;
       const entry = progressStore.save(progressEntry(pos, dur));
       lastSavedRef.current = entry;
       onProgress?.();
     },
-    [progressEntry, onProgress]
+    [progressEntry, onProgress, duration, currentTime]
   );
 
   useEffect(() => {
@@ -121,10 +125,9 @@ export default function Player({ item, onClose, onProgress }) {
     setControlsVisible(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      const video = videoRef.current;
-      if (video && !video.paused) setControlsVisible(false);
+      if (playing) setControlsVisible(false);
     }, HIDE_DELAY_MS);
-  }, []);
+  }, [playing]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,30 +140,25 @@ export default function Player({ item, onClose, onProgress }) {
       setEnded(false);
       setResumedFrom(null);
       try {
-        const [stream, hlsModule] = await Promise.all([
-          createStream(playItem.type, playItem.id, {
-            signal: controller.signal,
-            lang: preferredLang || undefined,
-            provider: playItem.provider,
-            season: playItem.season,
-            episode: playItem.episode
-          }),
-          import("hls.js")
-        ]);
-        const Hls = hlsModule.default;
+        const stream = await createStream(playItem.type, playItem.id, {
+          signal: controller.signal,
+          lang: preferredLang || undefined,
+          provider: playItem.provider,
+          season: playItem.season,
+          episode: playItem.episode
+        });
+
         if (cancelled) {
           cleanupStream(stream.sessionId);
           return;
         }
+
         sessionRef.current = stream.sessionId;
         setSourceNote(stream.note ?? null);
         setSourceStatus(stream.resolution?.status ?? null);
         setSourceProvider(stream.provider?.name ?? null);
 
-        const video = videoRef.current;
-        if (!video) return;
-
-        // Resume handling: only for the same title/episode, never beyond the real duration.
+        // Resume handling
         const saved = playItem.restart ? null : progressStore.get({
           provider: playItem.provider ?? "default",
           type: playItem.type,
@@ -170,6 +168,126 @@ export default function Player({ item, onClose, onProgress }) {
         });
         savedResumeRef.current = saved;
         resumeAppliedRef.current = false;
+
+        // Desktop Native MPV Execution Branch
+        if (isDesktop) {
+          const adapter = createDesktopMpvAdapter();
+          mpvAdapterRef.current = adapter;
+
+          adapter.on("ready", () => {
+            if (cancelled) return;
+            setPhase("ready");
+            setPlaying(true);
+          });
+
+          adapter.on("timeupdate", (pos) => {
+            if (cancelled) return;
+            setCurrentTime(pos);
+            const stamp = Date.now();
+            if (pos > 0 && stamp - saveTimerRef.current > SAVE_INTERVAL_MS) {
+              saveTimerRef.current = stamp;
+              persist(pos, duration);
+            }
+          });
+
+          adapter.on("durationchange", (dur) => {
+            if (cancelled) return;
+            setDuration(dur);
+            if (!resumeAppliedRef.current && saved && dur > 0) {
+              resumeAppliedRef.current = true;
+              const pos = clampPosition(saved.position, dur);
+              if (pos > 5 && pos < dur - 5) {
+                adapter.seek(pos);
+                setResumedFrom(pos);
+              }
+            }
+          });
+
+          adapter.on("play", () => {
+            if (cancelled) return;
+            setPlaying(true);
+          });
+
+          adapter.on("pause", () => {
+            if (cancelled) return;
+            setPlaying(false);
+            persist(currentTime, duration);
+          });
+
+          adapter.on("ratechange", (r) => {
+            if (cancelled) return;
+            setRate(r);
+          });
+
+          adapter.on("volumechange", ({ volume: v }) => {
+            if (cancelled) return;
+            setVolume(v);
+          });
+
+          adapter.on("mutechange", (m) => {
+            if (cancelled) return;
+            setMuted(m);
+          });
+
+          adapter.on("audiotracks", (tracks) => {
+            if (cancelled) return;
+            setAudioTracks(tracks);
+            if (preferredLang) {
+              const match = tracks.find((t) => t.lang === preferredLang);
+              if (match) adapter.setAudioTrack(match.id);
+            }
+          });
+
+          adapter.on("subtitletracks", (subs) => {
+            if (cancelled) return;
+            setSubtitleTracks(subs);
+          });
+
+          adapter.on("audiotrackchange", (aid) => {
+            if (cancelled) return;
+            setActiveTrack(aid);
+          });
+
+          adapter.on("subtitletrackchange", (sid) => {
+            if (cancelled) return;
+            setActiveSubtitle(sid);
+          });
+
+          adapter.on("ended", () => {
+            if (cancelled) return;
+            setEnded(true);
+            setPlaying(false);
+            if (duration > 0) {
+              progressStore.save(progressEntry(duration, duration));
+              onProgress?.();
+            }
+          });
+
+          adapter.on("error", (err) => {
+            if (cancelled) return;
+            setError(`Desktop native playback error: ${err?.message || err}`);
+            setPhase("error");
+          });
+
+          // Resolve absolute URL for local server playlist
+          const fullMediaUrl = stream.playlistUrl.startsWith("http")
+            ? stream.playlistUrl
+            : `${window.location.origin}${stream.playlistUrl}`;
+
+          await adapter.load(fullMediaUrl, {
+            volume: 1,
+            startTime: saved?.position
+          });
+
+          setPhase("ready");
+          return;
+        }
+
+        // Web HLS Playback Branch
+        const [hlsModule] = await Promise.all([import("hls.js")]);
+        const Hls = hlsModule.default;
+        const video = videoRef.current;
+        if (!video) return;
 
         if (!Hls.isSupported()) {
           if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -247,6 +365,10 @@ export default function Player({ item, onClose, onProgress }) {
     return () => {
       cancelled = true;
       controller.abort();
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.destroy();
+        mpvAdapterRef.current = null;
+      }
       const video = videoRef.current;
       if (video) persist(video.currentTime, video.duration);
       try {
@@ -261,7 +383,9 @@ export default function Player({ item, onClose, onProgress }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, attempt]);
 
+  // Video element event listeners (browser fallback)
   useEffect(() => {
+    if (isDesktop) return undefined;
     const video = videoRef.current;
     if (!video) return undefined;
     const onPlay = () => setPlaying(true);
@@ -284,15 +408,11 @@ export default function Player({ item, onClose, onProgress }) {
       }
     };
     const onMeta = () => setDuration(video.duration || 0);
-    // EVENT playlists only report a real duration once segments are known, so resume is
-    // applied on the first durationchange with a usable value (never beyond the real length).
     const applySavedResume = () => {
       const saved = savedResumeRef.current;
       if (!saved || resumeAppliedRef.current) return;
       const dur = Number(video.duration);
       if (!Number.isFinite(dur) || dur <= 0) return;
-      // EVENT playlists grow while segments load, so only resume once the reported
-      // duration can actually contain the saved position (never beyond the real length).
       if (dur <= saved.position + 10) return;
       resumeAppliedRef.current = true;
       const pos = clampPosition(saved.position, dur);
@@ -341,7 +461,7 @@ export default function Player({ item, onClose, onProgress }) {
       video.removeEventListener("volumechange", onVolume);
       video.removeEventListener("ended", onEnded);
     };
-  }, [phase, persist, progressEntry, onProgress]);
+  }, [phase, persist, progressEntry, onProgress, isDesktop]);
 
   useEffect(() => {
     const onFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
@@ -350,6 +470,17 @@ export default function Player({ item, onClose, onProgress }) {
   }, []);
 
   const togglePlay = useCallback(() => {
+    if (isDesktop && mpvAdapterRef.current) {
+      if (playing) {
+        mpvAdapterRef.current.pause();
+        setPlaying(false);
+      } else {
+        mpvAdapterRef.current.play();
+        setPlaying(true);
+      }
+      bumpControls();
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) video.play().then(() => setPlaying(true)).catch(() => {});
@@ -358,56 +489,112 @@ export default function Player({ item, onClose, onProgress }) {
       setPlaying(false);
     }
     bumpControls();
-  }, [bumpControls]);
+  }, [bumpControls, isDesktop, playing]);
 
   const skip = useCallback(
     (seconds) => {
+      if (isDesktop && mpvAdapterRef.current) {
+        const next = Math.max(0, Math.min(duration || 0, currentTime + seconds));
+        mpvAdapterRef.current.seek(next);
+        setCurrentTime(next);
+        bumpControls();
+        return;
+      }
       const video = videoRef.current;
       if (!video) return;
       video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds));
       bumpControls();
     },
-    [bumpControls]
+    [bumpControls, isDesktop, currentTime, duration]
   );
 
   const seekTo = useCallback(
     (value) => {
+      const v = Number(value);
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.seek(v);
+        setCurrentTime(v);
+        bumpControls();
+        return;
+      }
       const video = videoRef.current;
       if (!video) return;
-      video.currentTime = Number(value);
-      setCurrentTime(Number(value));
+      video.currentTime = v;
+      setCurrentTime(v);
       bumpControls();
     },
-    [bumpControls]
+    [bumpControls, isDesktop]
   );
 
-  const changeVolume = useCallback((value) => {
-    const video = videoRef.current;
-    if (!video) return;
-    const v = Number(value);
-    video.volume = v;
-    video.muted = v === 0;
-  }, []);
+  const changeVolume = useCallback(
+    (value) => {
+      const v = Number(value);
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.setVolume(v);
+        setVolume(v);
+        setMuted(v === 0);
+        return;
+      }
+      const video = videoRef.current;
+      if (!video) return;
+      video.volume = v;
+      video.muted = v === 0;
+    },
+    [isDesktop]
+  );
 
   const toggleMute = useCallback(() => {
+    if (isDesktop && mpvAdapterRef.current) {
+      const next = !muted;
+      mpvAdapterRef.current.setMute(next);
+      setMuted(next);
+      bumpControls();
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     video.muted = !video.muted;
     bumpControls();
-  }, [bumpControls]);
+  }, [bumpControls, isDesktop, muted]);
 
-  const changeRate = useCallback((value) => {
-    const video = videoRef.current;
-    const r = Number(value);
-    if (video) video.playbackRate = r;
-    setRate(r);
-  }, []);
+  const changeRate = useCallback(
+    (value) => {
+      const r = Number(value);
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.setSpeed(r);
+        setRate(r);
+        return;
+      }
+      const video = videoRef.current;
+      if (video) video.playbackRate = r;
+      setRate(r);
+    },
+    [isDesktop]
+  );
 
-  const selectAudio = useCallback((id) => {
-    if (!hlsRef.current) return;
-    hlsRef.current.audioTrack = Number(id);
-    setActiveTrack(Number(id));
-  }, []);
+  const selectAudio = useCallback(
+    (id) => {
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.setAudioTrack(id);
+        setActiveTrack(Number(id));
+        return;
+      }
+      if (!hlsRef.current) return;
+      hlsRef.current.audioTrack = Number(id);
+      setActiveTrack(Number(id));
+    },
+    [isDesktop]
+  );
+
+  const selectSubtitle = useCallback(
+    (id) => {
+      if (isDesktop && mpvAdapterRef.current) {
+        mpvAdapterRef.current.setSubtitleTrack(id);
+        setActiveSubtitle(id);
+      }
+    },
+    [isDesktop]
+  );
 
   const selectQuality = useCallback((value) => {
     const hls = hlsRef.current;
@@ -432,8 +619,7 @@ export default function Player({ item, onClose, onProgress }) {
   const goToEpisode = useCallback(
     (ep) => {
       if (!ep) return;
-      const video = videoRef.current;
-      if (video) persist(video.currentTime, video.duration);
+      persist(currentTime, duration);
       setSwitching(true);
       setCurrent((prev) => ({
         ...prev,
@@ -443,7 +629,7 @@ export default function Player({ item, onClose, onProgress }) {
         poster: ep.thumbnail ?? prev.poster
       }));
     },
-    [persist]
+    [persist, currentTime, duration]
   );
 
   useEffect(() => {
@@ -504,12 +690,22 @@ export default function Player({ item, onClose, onProgress }) {
       onMouseMove={bumpControls}
       onTouchStart={bumpControls}
     >
-      <video ref={videoRef} className="player-video" playsInline onClick={togglePlay} onDoubleClick={toggleFullscreen} />
+      {!isDesktop && (
+        <video ref={videoRef} className="player-video" playsInline onClick={togglePlay} onDoubleClick={toggleFullscreen} />
+      )}
+
+      {isDesktop && (
+        <div className="player-desktop-canvas" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
+          <div className="player-desktop-badge">Native MPV Active</div>
+        </div>
+      )}
 
       {(phase === "resolving" || switching) && (
         <div className="player-center">
           <div className="player-spinner" role="status" aria-label="Loading stream" />
-          <p className="player-center-text">Resolving stream and preparing HLS...</p>
+          <p className="player-center-text">
+            {isDesktop ? "Resolving stream and launching Native MPV..." : "Resolving stream and preparing HLS..."}
+          </p>
         </div>
       )}
 
@@ -539,6 +735,7 @@ export default function Player({ item, onClose, onProgress }) {
             <span className="player-title" title={displayTitle}>
               {displayTitle}
             </span>
+            {isDesktop && <span className="player-native-badge">NATIVE MPV</span>}
             {sourceStatus === "fixture_fallback" && <span className="player-test-badge">TEST MODE</span>}
             {sourceStatus === "provider_stream" && (
               <span className="player-live-badge">{sourceProvider ? `Real source · ${sourceProvider}` : "Real source"}</span>
@@ -643,26 +840,46 @@ export default function Player({ item, onClose, onProgress }) {
                 </label>
               )}
 
-              {qualityInfo.single ? (
-                <span className="player-quality-static" title={qualityNote ?? "Single quality source"}>
-                  <span className="player-quality-label">Quality</span>
-                  <span className="player-quality-value">{qualityLabel}</span>
-                </span>
-              ) : (
-                <label className="player-select" title={qualityNote ?? "Choose video quality"}>
-                  <span>Quality</span>
+              {subtitleTracks.length > 0 && (
+                <label className="player-select">
+                  <span>Subtitles</span>
                   <select
-                    value={activeLevel}
-                    onChange={(e) => selectQuality(e.target.value)}
-                    aria-label="Video quality"
+                    value={activeSubtitle ?? "no"}
+                    onChange={(e) => selectSubtitle(e.target.value)}
+                    aria-label="Subtitle track"
                   >
-                    {qualityInfo.options.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.value === AUTO_QUALITY ? "Auto" : option.label}
+                    <option value="no">Off</option>
+                    {subtitleTracks.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        {sub.title || sub.lang || `Track ${sub.id}`}
                       </option>
                     ))}
                   </select>
                 </label>
+              )}
+
+              {!isDesktop && (
+                qualityInfo.single ? (
+                  <span className="player-quality-static" title={qualityNote ?? "Single quality source"}>
+                    <span className="player-quality-label">Quality</span>
+                    <span className="player-quality-value">{qualityLabel}</span>
+                  </span>
+                ) : (
+                  <label className="player-select" title={qualityNote ?? "Choose video quality"}>
+                    <span>Quality</span>
+                    <select
+                      value={activeLevel}
+                      onChange={(e) => selectQuality(e.target.value)}
+                      aria-label="Video quality"
+                    >
+                      {qualityInfo.options.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.value === AUTO_QUALITY ? "Auto" : option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )
               )}
 
               <label className="player-select">

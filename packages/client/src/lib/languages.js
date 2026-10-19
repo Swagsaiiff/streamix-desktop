@@ -91,7 +91,7 @@ export function languageName(code) {
 
 export function audioTrackLabel(track) {
   if (!track) return "";
-  const base = String(track.name ?? "").trim();
+  const base = String(track.name ?? track.title ?? "").trim();
   const langName = languageName(track.lang);
   const lowered = base.toLowerCase();
   const code = String(track.lang ?? "").trim().toLowerCase();

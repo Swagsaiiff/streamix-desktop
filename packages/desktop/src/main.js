@@ -1,7 +1,8 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, shell, ipcMain } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { MpvManager } from "./mpv-manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
@@ -9,6 +10,7 @@ const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173
 const CLIENT_DIST_PATH = path.resolve(__dirname, "../../client/dist/index.html");
 
 let mainWindow = null;
+const mpv = new MpvManager();
 
 // Ensure single instance of the desktop application
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -22,6 +24,59 @@ if (!gotSingleInstanceLock) {
     }
   });
 }
+
+// Forward MPV events to renderer via webContents
+mpv.onEvent = (type, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("mpv:event", { type, data });
+  }
+};
+
+// Register safe IPC handlers for MPV player control
+ipcMain.handle("mpv:start", async (_event, sourceUrl, options) => {
+  try {
+    return await mpv.start(sourceUrl, options);
+  } catch (err) {
+    console.error("[main] Failed to start MPV:", err.message);
+    throw err;
+  }
+});
+
+ipcMain.handle("mpv:stop", async () => {
+  return await mpv.stop();
+});
+
+ipcMain.handle("mpv:play", async () => {
+  return await mpv.play();
+});
+
+ipcMain.handle("mpv:pause", async () => {
+  return await mpv.pause();
+});
+
+ipcMain.handle("mpv:seek", async (_event, seconds, mode) => {
+  return await mpv.seek(seconds, mode);
+});
+
+ipcMain.handle("mpv:set-volume", async (_event, volume) => {
+  return await mpv.setVolume(volume);
+});
+
+ipcMain.handle("mpv:set-mute", async (_event, muted) => {
+  return await mpv.setMute(muted);
+});
+
+ipcMain.handle("mpv:set-speed", async (_event, speed) => {
+  return await mpv.setSpeed(speed);
+});
+
+ipcMain.handle("mpv:set-audio-track", async (_event, aid) => {
+  return await mpv.setAudioTrack(aid);
+});
+
+ipcMain.handle("mpv:set-subtitle-track", async (_event, sid) => {
+  return await mpv.setSubtitleTrack(sid);
+});
 
 async function waitForServer(url, timeoutMs = 30000, intervalMs = 250) {
   const deadline = Date.now() + timeoutMs;
@@ -127,6 +182,7 @@ async function createWindow() {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    mpv.stop().catch(() => {});
   });
 }
 
@@ -148,6 +204,6 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  // On desktop platforms (including macOS for this dedicated app shell), exit cleanly
+  mpv.stop().catch(() => {});
   app.quit();
 });
