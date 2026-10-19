@@ -2,7 +2,7 @@ import { BaseProvider, ProviderError } from "./base.js";
 import { logger } from "../logger.js";
 
 const URLS_JSON = "https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json";
-const FALLBACK_BASE = "https://vegamovies.gallery";
+const FALLBACK_BASE = "https://new1.vegamovies.lease";
 const CINEMETA = "https://v3-cinemeta.strem.io";
 const HOST_PATTERN = /(nexdrive\.|vcloud\.|hubcloud\.|fastdl\.|filebee\.|vegadrive\.|pixeldrain\.|gofile\.|gdflix\.|hubdrive\.|driveseed\.|driveleech\.|drivebot\.)/i;
 const NOISE_LINK_PATTERN = /(xmlrpc\.php|wp-json|wp-content|wp-includes|wp-admin|\/feed\/?|comments\/feed|\/comments\/?|\/tag\/|\/category\/|\/page\/\d|\/author\/|\.(css|js|png|jpe?g|svg|ico|webp|gif)(\?|$)|\/wp-login)/i;
@@ -381,28 +381,109 @@ export class VegaMoviesProvider extends BaseProvider {
     };
   }
 
-  async getBaseUrl() {
-    const cacheKey = "vega:base";
-    const cached = this.cache?.get(cacheKey);
-    if (cached) return cached;
-    let base = FALLBACK_BASE;
+  async validateSearchHost(origin) {
     try {
-      const data = await this.fetchJson(URLS_JSON, { timeoutMs: 8000 });
-      if (data && typeof data.vegamovies === "string" && data.vegamovies.startsWith("http")) {
-        base = data.vegamovies;
+      const cleanOrigin = origin.replace(/\/+$/, "");
+      const testUrl = `${cleanOrigin}/search.php?q=test&page=1`;
+      const res = await fetch(testUrl, {
+        headers: {
+          "User-Agent": this.getUserAgent(),
+          Accept: "application/json"
+        },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) return false;
+      const ct = res.headers.get("content-type") || "";
+      if (!ct.includes("json")) return false;
+      const data = await res.json();
+      return Array.isArray(data?.hits);
+    } catch {
+      return false;
+    }
+  }
+
+  async resolveGatewayTarget(candidate) {
+    try {
+      const cleanCandidate = candidate.replace(/\/+$/, "");
+      const gatewayUrl = `${cleanCandidate}/?re=vg&t=2`;
+      const res = await fetch(gatewayUrl, {
+        headers: { "User-Agent": this.getUserAgent() },
+        redirect: "follow",
+        signal: AbortSignal.timeout(6000)
+      });
+      if (res.url) {
+        return new URL(res.url).origin;
       }
     } catch {
-      // provider url list unavailable; keep the known fallback base
+      // gateway traversal failed
     }
-    this.cache?.set(cacheKey, base, 3600000);
-    return base;
+    return null;
+  }
+
+  async getBaseUrl({ forceFresh = false } = {}) {
+    const cacheKey = "vega:base";
+    if (!forceFresh) {
+      const cached = this.cache?.get(cacheKey);
+      if (cached) return cached;
+    }
+
+    const candidateOrigins = [];
+    try {
+      const data = await this.fetchJson(URLS_JSON, { timeoutMs: 6000 });
+      if (data && typeof data.vegamovies === "string" && data.vegamovies.startsWith("http")) {
+        candidateOrigins.push(data.vegamovies);
+      }
+    } catch {
+      // dynamic urls.json fetch failed; rely on verified fallbacks
+    }
+    candidateOrigins.push(FALLBACK_BASE);
+    candidateOrigins.push("https://1vegamovies.pics");
+
+    let chosenBase = null;
+
+    for (const candidate of candidateOrigins) {
+      if (!candidate) continue;
+      // 1. Direct validation: does candidate host have a working search endpoint?
+      if (await this.validateSearchHost(candidate)) {
+        chosenBase = candidate.replace(/\/+$/, "");
+        break;
+      }
+
+      // 2. Gateway redirection check: follow ?re=vg&t=2
+      const gatewayTarget = await this.resolveGatewayTarget(candidate);
+      if (gatewayTarget && (await this.validateSearchHost(gatewayTarget))) {
+        chosenBase = gatewayTarget.replace(/\/+$/, "");
+        break;
+      }
+    }
+
+    if (!chosenBase) {
+      chosenBase = FALLBACK_BASE;
+    }
+
+    this.cache?.set(cacheKey, chosenBase, 1800000); // 30 minutes cache for verified base
+    return chosenBase;
   }
 
   async search(query) {
     const base = await this.getBaseUrl();
     const url = `${base}/search.php?q=${encodeURIComponent(query)}&page=1`;
-    const json = await this.fetchJson(url, { timeoutMs: 12000 });
-    return parseVegaSearch(json);
+    try {
+      const json = await this.fetchJson(url, { timeoutMs: 12000 });
+      return parseVegaSearch(json);
+    } catch (err) {
+      if (err instanceof ProviderError && (err.code === "http" || err.code === "parse")) {
+        // Current or cached base failed; invalidate cache and re-resolve dynamically
+        this.cache?.delete("vega:base");
+        const freshBase = await this.getBaseUrl({ forceFresh: true });
+        if (freshBase && freshBase !== base) {
+          const retryUrl = `${freshBase}/search.php?q=${encodeURIComponent(query)}&page=1`;
+          const retryJson = await this.fetchJson(retryUrl, { timeoutMs: 12000 });
+          return parseVegaSearch(retryJson);
+        }
+      }
+      throw err;
+    }
   }
 
   async getDetails(type, id) {
