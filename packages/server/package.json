@@ -1,0 +1,15 @@
+{
+  "name": "@streamix/server",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test src/cache.test.js src/providers/cinemeta.test.js src/providers/tmdb.test.js src/providers/extractor.test.js src/providers/stream.test.js src/providers/vegamovies.test.js src/routes/search.test.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

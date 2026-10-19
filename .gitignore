@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+
+# Production and build outputs
+dist/
+build/
+
+# Environment files and credentials (never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# Logs and runtime errors
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+.kilo/
+.vscode/
+.idea/
+agent-*.txt
+
+# Temporary and generated media sessions
+temp/*
+!temp/fixtures/
+temp/fixtures/*
+!temp/fixtures/multi-audio.mkv
+
+# Accidental root directories (preserved on disk for separate review)
+/-ac/
+/-crf/
+/-f/
+/-hide_banner/
+/-hls_flags/
+/-hls_playlist_type/
+/-hls_segment_filename/
+/-hls_time/
+/-i/
+/-loglevel/
+/-map/
+/-nostdin/
+/-p/
+/-pix_fmt/
+/-preset/
+/-y/
+/128k/
+/2/
+/23/
+/4/
+/aac/
+/error/
+/ffmpeg/
+/hls/
+/independent_segments/
+/libx264/
+/veryfast/
+/vod/
+/webvtt/
+/yuv420p/
