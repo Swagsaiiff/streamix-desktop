@@ -91,6 +91,18 @@ export function streamRouter({
         year: stream.year,
         episode: stream.episode ?? null,
         mediaType: stream.mediaType,
+        sourceUrl: stream.sourceUrl ?? null,
+        headers: stream.headers ?? {},
+        sourceType: stream.sourceType ?? stream.resolution?.sourceType ?? "provider",
+        candidates: Array.isArray(stream.variants)
+          ? stream.variants.map((v) => ({
+              url: v.url ?? stream.sourceUrl,
+              quality: v.height ? `${v.height}p` : null,
+              headers: stream.headers ?? {}
+            }))
+          : stream.sourceUrl
+            ? [{ url: stream.sourceUrl, quality: stream.resolution?.quality ?? null, headers: stream.headers ?? {} }]
+            : [],
         note: stream.note ?? null,
         playlistUrl: `/api/stream/${session.sessionId}/master.m3u8`
       });

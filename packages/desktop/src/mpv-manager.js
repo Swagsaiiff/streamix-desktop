@@ -57,6 +57,24 @@ export class MpvManager {
       `--volume=${Math.round((options.volume ?? 1) * 100)}`
     ];
 
+    if (options.headers && typeof options.headers === "object") {
+      const headerPairs = [];
+      for (const [key, val] of Object.entries(options.headers)) {
+        if (!val) continue;
+        const lower = key.toLowerCase();
+        if (lower === "user-agent") {
+          mpvArgs.push(`--user-agent=${val}`);
+        } else if (lower === "referer") {
+          mpvArgs.push(`--referrer=${val}`);
+        } else {
+          headerPairs.push(`${key}: ${val}`);
+        }
+      }
+      if (headerPairs.length > 0) {
+        mpvArgs.push(`--http-header-fields=${headerPairs.join(",")}`);
+      }
+    }
+
     if (options.wid) {
       mpvArgs.push(`--wid=${options.wid}`);
     }

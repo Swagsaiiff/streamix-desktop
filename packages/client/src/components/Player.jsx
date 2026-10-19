@@ -263,19 +263,38 @@ export default function Player({ item, onClose, onProgress }) {
             }
           });
 
-          adapter.on("error", (err) => {
+          // Choose primary source: direct media URL (if playable directly) or HLS master playlist
+          const directUrl = stream.sourceUrl;
+          const hlsPlaylistUrl = stream.playlistUrl.startsWith("http")
+            ? stream.playlistUrl
+            : `${window.location.origin}${stream.playlistUrl}`;
+
+          // Try direct media URL first if available, else local server HLS playlist
+          const targetUrl = directUrl || hlsPlaylistUrl;
+          const reqHeaders = stream.headers ?? {};
+
+          adapter.on("error", async (err) => {
             if (cancelled) return;
+            // If direct provider source fails, attempt fallback to local server HLS session
+            if (targetUrl !== hlsPlaylistUrl && hlsPlaylistUrl) {
+              console.warn("[Player] Direct source failed, falling back to local server HLS transcode:", err);
+              try {
+                await adapter.load(hlsPlaylistUrl, {
+                  volume: 1,
+                  startTime: saved?.position
+                });
+                return;
+              } catch (fallbackErr) {
+                console.error("[Player] Fallback failed:", fallbackErr);
+              }
+            }
             setError(`Desktop native playback error: ${err?.message || err}`);
             setPhase("error");
           });
 
-          // Resolve absolute URL for local server playlist
-          const fullMediaUrl = stream.playlistUrl.startsWith("http")
-            ? stream.playlistUrl
-            : `${window.location.origin}${stream.playlistUrl}`;
-
-          await adapter.load(fullMediaUrl, {
+          await adapter.load(targetUrl, {
             volume: 1,
+            headers: reqHeaders,
             startTime: saved?.position
           });
 
