@@ -63,10 +63,18 @@ if (!fs.existsSync(mpvExe)) {
 // 5. Verify/compile streamix-video-host.exe
 const videoHostExe = path.resolve(desktopRoot, "bin/streamix-video-host.exe");
 const videoHostCs = path.resolve(desktopRoot, "src/video-host.cs");
-if (!fs.existsSync(videoHostExe) && fs.existsSync(videoHostCs)) {
-  const { execSync } = await import("node:child_process");
-  console.log("[prepare-package] Compiling streamix-video-host.exe...");
-  execSync(`C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64 /target:exe /out:"${videoHostExe}" "${videoHostCs}"`, { stdio: "inherit" });
+if (fs.existsSync(videoHostCs)) {
+  const needsCompile =
+    !fs.existsSync(videoHostExe) ||
+    fs.statSync(videoHostCs).mtimeMs > fs.statSync(videoHostExe).mtimeMs;
+  if (needsCompile) {
+    const { execSync } = await import("node:child_process");
+    console.log("[prepare-package] Compiling streamix-video-host.exe from source...");
+    const safeHostExe = videoHostExe.replace(/\//g, "\\");
+    const safeCsPath = videoHostCs.replace(/\//g, "\\");
+    fs.mkdirSync(path.dirname(videoHostExe), { recursive: true });
+    execSync(`C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64 /target:exe /out:"${safeHostExe}" "${safeCsPath}"`, { stdio: "inherit" });
+  }
 }
 if (fs.existsSync(videoHostExe)) {
   console.log(`[prepare-package] Verified streamix-video-host binary present at ${videoHostExe}`);

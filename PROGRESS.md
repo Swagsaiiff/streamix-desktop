@@ -557,3 +557,12 @@ Live evidence for "Beast of War (2025)":
   - App mounted: true
   - Cards rendered: 261
   - Bridge keys: `["isDesktop","platform","version","apiUrl","mpv"]`.
+
+## Desktop setup installer rebuild & automation
+
+### Action Taken
+- Executed full client build and Electron packaging pipeline (`npm run package:desktop`).
+- Produced freshly compiled Windows installer (`packages/desktop/dist/STREAMIX Setup 1.0.0.exe` and `packages/desktop/dist/setup.exe`, 129 MB) embedding the latest native video-host viewport embedding fixes, D3D11 hardware decoding, MPV integration, and player controls.
+- Added automated `postpackage` script in `packages/desktop/package.json` ensuring that every execution of `npm run package:desktop` automatically mirrors the built NSIS installer to `dist/setup.exe`.
+- Added automatic recompilation check in `prepare-package.mjs` so that `streamix-video-host.exe` is automatically recompiled whenever `video-host.cs` changes.
+- Added permanent agent rule in `AGENTS.md` mandating automatic re-building of the desktop installer after every desktop/client bug fix.

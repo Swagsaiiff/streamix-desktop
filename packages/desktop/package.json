@@ -12,7 +12,8 @@
     "start": "electron .",
     "test:spike": "node src/spike-mpv.js",
     "prepackage": "node scripts/prepare-package.mjs",
-    "package": "npm run prepackage && electron-builder --win nsis --x64"
+    "package": "npm run prepackage && electron-builder --win nsis --x64",
+    "postpackage": "node -e \"const fs=require('node:fs'), path=require('node:path'); const candidates = ['dist/STREAMIX Setup 1.0.0.exe', 'dist/STREAMIX.Setup.1.0.0.exe']; for (const c of candidates) { if (fs.existsSync(c)) { fs.copyFileSync(c, 'dist/setup.exe'); console.log('[postpackage] Created dist/setup.exe mirror from ' + c); break; } }\""
   },
   "dependencies": {
     "express": "^5.3.0"

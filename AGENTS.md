@@ -22,6 +22,7 @@ STREAMIX is a responsive Netflix-style movie and series streaming website driven
   - client touched → `npm run build` (and `npm run dev:client` smoke if dev wiring changed)
   - server touched → start the server and run `npm run health`
   - client↔server wiring touched → verify a real response end-to-end, not by assumption
+  - desktop/client bug fixes or updates -> automatically rebuild the desktop setup installer (`npm run package:desktop`) to update `setup.exe`
 - Record evidence (exact command + observed result summary) in `PROGRESS.md`. A task is not complete until its verification ran and passed.
 - If lint or typecheck commands are added later, run them before declaring completion.
 - Fix errors caused by the current task before moving on. Never mark a known-broken state as done.
