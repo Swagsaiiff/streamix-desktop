@@ -51,6 +51,7 @@ export class MpvManager {
     const mpvExe = this.locateBinary();
     this.pipeName = `\\\\.\\pipe\\streamix-mpv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+    const hwdecMode = options.hwdec || "auto-safe";
     const mpvArgs = [
       "--idle=yes",
       `--input-ipc-server=${this.pipeName}`,
@@ -60,6 +61,7 @@ export class MpvManager {
       "--force-window=yes",
       "--osc=no",
       "--osd-level=0",
+      `--hwdec=${hwdecMode}`,
       `--volume=${Math.round((options.volume ?? 1) * 100)}`
     ];
 
@@ -127,44 +129,7 @@ export class MpvManager {
       await this.command("seek", Number(options.startTime), "absolute");
     }
 
-    this.startPolling();
     return { ok: true, pipeName: this.pipeName };
-  }
-
-  startPolling() {
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = setInterval(async () => {
-      if (!this.socket || !this.proc) return;
-      try {
-        const [pos, dur, paused, aid, sid, spd, vol, muted] = await Promise.all([
-          this.getProperty("time-pos").catch(() => null),
-          this.getProperty("duration").catch(() => null),
-          this.getProperty("pause").catch(() => null),
-          this.getProperty("aid").catch(() => null),
-          this.getProperty("sid").catch(() => null),
-          this.getProperty("speed").catch(() => null),
-          this.getProperty("volume").catch(() => null),
-          this.getProperty("mute").catch(() => null)
-        ]);
-
-        if (pos !== null) this.emit("time-pos", pos);
-        if (dur !== null) this.emit("duration", dur);
-        if (paused !== null) this.emit("pause", paused);
-        if (aid !== null && aid !== this.activeAid) {
-          this.activeAid = aid;
-          this.emit("aid", aid);
-        }
-        if (sid !== null && sid !== this.activeSid) {
-          this.activeSid = sid;
-          this.emit("sid", sid);
-        }
-        if (spd !== null) this.emit("speed", spd);
-        if (vol !== null) this.emit("volume", vol / 100);
-        if (muted !== null) this.emit("mute", muted);
-      } catch {
-        // ignore polling error
-      }
-    }, 500);
   }
 
   async connectWithRetry(pipe, retries = 40, delayMs = 150) {
@@ -225,12 +190,27 @@ export class MpvManager {
       } else if (name === "sid") {
         this.activeSid = data;
         this.emit("sid", data);
+      } else if (name === "time-pos") {
+        const pos = Number(data);
+        if (Number.isFinite(pos)) {
+          const now = Date.now();
+          if (
+            !this.lastTimePosEmit ||
+            now - this.lastTimePosEmit >= 250 ||
+            Math.abs(pos - (this.lastTimePosVal ?? 0)) >= 2
+          ) {
+            this.lastTimePosEmit = now;
+            this.lastTimePosVal = pos;
+            this.emit("time-pos", pos);
+          }
+        }
       } else {
         this.emit(name, data);
       }
     } else if (event === "playback-restart" || event === "file-loaded") {
       this.emit("ready", {});
       this.syncTracks();
+      this.syncHwdec();
     } else if (event === "end-file") {
       const reason = data?.reason;
       if (reason === "error") {
@@ -239,6 +219,19 @@ export class MpvManager {
       } else {
         this.emit("ended", data);
       }
+    }
+  }
+
+  async syncHwdec() {
+    try {
+      const [hwdecCurrent, videoCodec] = await Promise.all([
+        this.getProperty("hwdec-current").catch(() => null),
+        this.getProperty("video-codec").catch(() => null)
+      ]);
+      console.log(`[mpv] Active decoder: ${hwdecCurrent || "software"} (codec: ${videoCodec || "unknown"})`);
+      this.emit("hwdec-active", { hwdec: hwdecCurrent, codec: videoCodec });
+    } catch {
+      // ignore
     }
   }
 

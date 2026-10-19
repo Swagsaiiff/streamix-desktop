@@ -190,12 +190,20 @@ export default function Player({ item, onClose, onProgress }) {
 
           adapter.on("timeupdate", (pos) => {
             if (cancelled) return;
-            setCurrentTime(pos);
+            setCurrentTime((prev) => {
+              if (pos > 0 && Math.abs(pos - prev) < 0.25) return prev;
+              return pos;
+            });
             const stamp = Date.now();
             if (pos > 0 && stamp - saveTimerRef.current > SAVE_INTERVAL_MS) {
               saveTimerRef.current = stamp;
               persist(pos, duration);
             }
+          });
+
+          adapter.on("hwdecactive", ({ hwdec, codec }) => {
+            if (cancelled) return;
+            console.log(`[Player] Native MPV hardware decoding active: ${hwdec || "software"} (codec: ${codec || "unknown"})`);
           });
 
           adapter.on("durationchange", (dur) => {
@@ -750,18 +758,30 @@ export default function Player({ item, onClose, onProgress }) {
     };
   }, [bumpControls]);
 
+  const lastBoundsRef = useRef(null);
   useEffect(() => {
     if (!isDesktop) return;
     const updateBounds = () => {
       if (!canvasRef.current || !mpvAdapterRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
-      mpvAdapterRef.current.setBounds({
+      const nextBounds = {
         x: Math.round(rect.left * dpr),
         y: Math.round(rect.top * dpr),
         width: Math.max(1, Math.round(rect.width * dpr)),
         height: Math.max(1, Math.round(rect.height * dpr))
-      }).catch(() => {});
+      };
+      if (
+        lastBoundsRef.current &&
+        lastBoundsRef.current.x === nextBounds.x &&
+        lastBoundsRef.current.y === nextBounds.y &&
+        lastBoundsRef.current.width === nextBounds.width &&
+        lastBoundsRef.current.height === nextBounds.height
+      ) {
+        return;
+      }
+      lastBoundsRef.current = nextBounds;
+      mpvAdapterRef.current.setBounds(nextBounds).catch(() => {});
     };
     updateBounds();
     const observer = new ResizeObserver(updateBounds);

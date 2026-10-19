@@ -71,6 +71,9 @@ export function createDesktopMpvAdapter() {
       case "error":
         emit("error", data);
         break;
+      case "hwdec-active":
+        emit("hwdecactive", data);
+        break;
       default:
         break;
     }
