@@ -566,3 +566,47 @@ Live evidence for "Beast of War (2025)":
 - Added automated `postpackage` script in `packages/desktop/package.json` ensuring that every execution of `npm run package:desktop` automatically mirrors the built NSIS installer to `dist/setup.exe`.
 - Added automatic recompilation check in `prepare-package.mjs` so that `streamix-video-host.exe` is automatically recompiled whenever `video-host.cs` changes.
 - Added permanent agent rule in `AGENTS.md` mandating automatic re-building of the desktop installer after every desktop/client bug fix.
+
+
+## Desktop Zoom Shortcut Handling & Viewport Reset (COMPLETED)
+
+### Objective
+Resolve the issue where zooming out via `Ctrl + -` caused the app view to shrink, but pressing `Ctrl + +` failed to enlarge it, and ensure that the app view resets to 100% default and synchronizes properly with native video playback.
+
+### Cause
+In Electron on Windows with `autoHideMenuBar: true` and no explicit Application Menu:
+1. Standard US keyboards share the `=` and `+` characters on the same physical key.
+2. Pressing `Ctrl` and that key without `Shift` produces `key: '='` (`code: 'Equal'`). Chromium does not map unshifted `Ctrl + =` to Zoom In without a menu accelerator.
+3. `Ctrl + -` worked because `-` is an unshifted character.
+4. Chromium persisted the negative zoom level into user partition preferences on disk, causing the shrunken state to persist across restarts.
+
+### Solution
+1. **Window Keyboard Input Interception (`packages/desktop/src/main.js`):**
+   - Added `before-input-event` listener capturing:
+     - Zoom In: `Ctrl + =`, `Ctrl + +`, `Ctrl + Shift + =`, and `Ctrl + NumpadAdd` (incrementing by +0.1 up to 3.0x).
+     - Zoom Out: `Ctrl + -`, `Ctrl + _`, `Ctrl + NumpadSubtract` (decrementing by -0.1 down to 0.5x).
+     - Zoom Reset: `Ctrl + 0`, `Ctrl + Numpad0` (resetting to 1.0x / 100%).
+   - Added `zoom-changed` listener for mouse-wheel / trackpad zoom gestures.
+   - Added `did-finish-load` listener resetting zoom factor to `1.0` and level to `0` on application launch so stuck/shrunk views automatically recover.
+   - Synchronized `videoHost.sync()` and dispatched `window.dispatchEvent(new Event('resize'))` on zoom changes so the native video surface aligns with the resized player viewport.
+   - Added IPC handlers `window:zoom-in`, `window:zoom-out`, `window:reset-zoom`, and `window:get-zoom`.
+2. **Renderer Bridge (`packages/desktop/src/preload.cjs`):**
+   - Exposed `streamixDesktop.zoomIn()`, `streamixDesktop.zoomOut()`, `streamixDesktop.resetZoom()`, and `streamixDesktop.getZoom()`.
+
+### Verification Results
+- Automated Electron zoom verification test passed all 8 cases:
+  - Initial zoom factor: 1.0
+  - After `Ctrl + -`: 0.9
+  - After `Ctrl + =` (unshifted physical `+` key): 1.0
+  - After `Ctrl + Shift + +`: 1.1
+  - After `Ctrl + 0` (reset): 1.0
+  - Bridge methods `getZoom()`, `zoomIn()`, `resetZoom()` verified.
+- End-to-end Electron verification (`npx electron packages/desktop/src/main.js --test-verification`) succeeded:
+  - Page title: STREAMIX
+  - App mounted: true
+  - Cards rendered: 260
+  - Bridge keys: `["isDesktop","platform","version","apiUrl","zoomIn","zoomOut","resetZoom","getZoom","mpv"]`.
+- Desktop package build (`npm run package:desktop`) executed cleanly:
+  - Version auto-incremented to `1.0.3`.
+  - Old dist artifacts removed.
+  - Output created: `packages/desktop/dist/STREAMIX Setup 1.0.3.exe` and mirror `packages/desktop/dist/setup.exe` (129 MB).

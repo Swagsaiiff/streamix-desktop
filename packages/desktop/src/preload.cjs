@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld("streamixDesktop", {
   platform: process.platform,
   version: "0.1.0",
   apiUrl: process.env.STREAMIX_API_URL || "http://localhost:4000",
+  zoomIn: () => ipcRenderer.invoke("window:zoom-in"),
+  zoomOut: () => ipcRenderer.invoke("window:zoom-out"),
+  resetZoom: () => ipcRenderer.invoke("window:reset-zoom"),
+  getZoom: () => ipcRenderer.invoke("window:get-zoom"),
+
   mpv: {
     start: (sourceUrl, options) => ipcRenderer.invoke("mpv:start", sourceUrl, options),
     stop: () => ipcRenderer.invoke("mpv:stop"),

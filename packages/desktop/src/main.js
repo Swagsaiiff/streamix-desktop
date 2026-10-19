@@ -125,6 +125,40 @@ ipcMain.handle("mpv:set-subtitle-track", async (_event, sid) => {
   return await mpv.setSubtitleTrack(sid);
 });
 
+
+function applyZoom(delta) {
+  if (!mainWindow || mainWindow.isDestroyed()) return 1.0;
+  const current = mainWindow.webContents.getZoomFactor();
+  const next = Math.min(3.0, Math.max(0.5, Math.round((current + delta) * 10) / 10));
+  mainWindow.webContents.setZoomFactor(next);
+  mainWindow.webContents
+    .executeJavaScript("window.dispatchEvent(new Event('resize'))")
+    .catch(() => {});
+  videoHost.sync().catch(() => {});
+  return next;
+}
+
+function resetZoom() {
+  if (!mainWindow || mainWindow.isDestroyed()) return 1.0;
+  mainWindow.webContents.setZoomFactor(1.0);
+  mainWindow.webContents.setZoomLevel(0);
+  mainWindow.webContents
+    .executeJavaScript("window.dispatchEvent(new Event('resize'))")
+    .catch(() => {});
+  videoHost.sync().catch(() => {});
+  return 1.0;
+}
+
+ipcMain.handle("window:zoom-in", () => applyZoom(0.1));
+ipcMain.handle("window:zoom-out", () => applyZoom(-0.1));
+ipcMain.handle("window:reset-zoom", () => resetZoom());
+ipcMain.handle("window:get-zoom", () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow.webContents.getZoomFactor();
+  }
+  return 1.0;
+});
+
 async function waitForServer(url, timeoutMs = 30000, intervalMs = 250) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -164,6 +198,58 @@ async function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
   });
+
+  // Reset zoom factor to default 100% on page load so accidental zoom-out does not remain permanently stuck
+  mainWindow.webContents.on("did-finish-load", () => {
+    resetZoom();
+  });
+
+  // Handle keyboard zoom shortcuts reliably across all keyboard layouts:
+  // Ctrl + '=' / '+' / NumpadAdd -> Zoom In
+  // Ctrl + '-' / '_' / NumpadSubtract -> Zoom Out
+  // Ctrl + '0' / Numpad0 -> Reset Zoom to 100%
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const isCtrl = input.control || input.meta;
+    if (!isCtrl) return;
+
+    const isZoomIn =
+      input.key === "=" ||
+      input.key === "+" ||
+      input.code === "Equal" ||
+      input.code === "NumpadAdd";
+
+    const isZoomOut =
+      input.key === "-" ||
+      input.key === "_" ||
+      input.code === "Minus" ||
+      input.code === "NumpadSubtract";
+
+    const isZoomReset =
+      input.key === "0" ||
+      input.code === "Digit0" ||
+      input.code === "Numpad0";
+
+    if (isZoomIn) {
+      event.preventDefault();
+      applyZoom(0.1);
+    } else if (isZoomOut) {
+      event.preventDefault();
+      applyZoom(-0.1);
+    } else if (isZoomReset) {
+      event.preventDefault();
+      resetZoom();
+    }
+  });
+
+  mainWindow.webContents.on("zoom-changed", (_event, zoomDirection) => {
+    if (zoomDirection === "in") {
+      applyZoom(0.1);
+    } else if (zoomDirection === "out") {
+      applyZoom(-0.1);
+    }
+  });
+
 
   // Prevent navigation away from the application origin
   mainWindow.webContents.on("will-navigate", (event, targetUrl) => {
