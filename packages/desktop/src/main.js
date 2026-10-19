@@ -9,7 +9,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
 const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
-const CLIENT_DIST_PATH = path.resolve(__dirname, "../../client/dist/index.html");
+function resolveClientDist() {
+  const candidates = [
+    process.env.STREAMIX_CLIENT_DIST,
+    path.resolve(__dirname, "../client-dist/index.html"),
+    path.resolve(__dirname, "../client/dist/index.html"),
+    path.resolve(__dirname, "../../client/dist/index.html"),
+    path.resolve(process.resourcesPath || "", "app/client-dist/index.html"),
+    path.resolve(process.resourcesPath || "", "app.asar/client-dist/index.html")
+  ].filter(Boolean);
+
+  for (const cand of candidates) {
+    if (existsSync(cand)) return cand;
+  }
+  return candidates[0] || path.resolve(__dirname, "../client-dist/index.html");
+}
 
 let mainWindow = null;
 const mpv = new MpvManager();
@@ -144,18 +158,19 @@ async function createWindow() {
 
   const isDev = process.env.NODE_ENV !== "production" && !app.isPackaged;
 
+  const clientDist = resolveClientDist();
   if (isDev) {
-    const ready = await waitForServer(DEV_SERVER_URL, 30000);
+    const ready = await waitForServer(DEV_SERVER_URL, 2500);
     if (ready) {
       await mainWindow.loadURL(DEV_SERVER_URL);
-    } else if (existsSync(CLIENT_DIST_PATH)) {
-      console.warn(`[desktop] Dev server at ${DEV_SERVER_URL} unavailable. Loading production build from ${CLIENT_DIST_PATH}`);
-      await mainWindow.loadFile(CLIENT_DIST_PATH);
+    } else if (existsSync(clientDist)) {
+      console.warn(`[desktop] Dev server at ${DEV_SERVER_URL} unavailable. Loading production build from ${clientDist}`);
+      await mainWindow.loadFile(clientDist);
     } else {
       throw new Error(`[desktop] Unable to connect to Vite dev server at ${DEV_SERVER_URL} and no dist/index.html found.`);
     }
-  } else if (existsSync(CLIENT_DIST_PATH)) {
-    await mainWindow.loadFile(CLIENT_DIST_PATH);
+  } else if (existsSync(clientDist)) {
+    await mainWindow.loadFile(clientDist);
   } else {
     await mainWindow.loadURL(DEV_SERVER_URL);
   }
@@ -164,11 +179,11 @@ async function createWindow() {
     console.log("[desktop-test] Running automated verification in Electron...");
     try {
       let cardsCount = 0;
-      let bridgeObj = null;
+      let bridgeKeys = null;
       for (let i = 0; i < 20; i += 1) {
         await new Promise((r) => setTimeout(r, 500));
         cardsCount = await mainWindow.webContents.executeJavaScript('document.querySelectorAll(".card").length');
-        bridgeObj = await mainWindow.webContents.executeJavaScript('window.streamixDesktop');
+        bridgeKeys = await mainWindow.webContents.executeJavaScript('window.streamixDesktop ? Object.keys(window.streamixDesktop) : null');
         if (cardsCount > 0) break;
       }
       const pageTitle = await mainWindow.webContents.executeJavaScript("document.title");
@@ -176,7 +191,7 @@ async function createWindow() {
       console.log(`[desktop-test] PAGE_TITLE: ${pageTitle}`);
       console.log(`[desktop-test] APP_MOUNTED: ${appMounted}`);
       console.log(`[desktop-test] CARDS_RENDERED: ${cardsCount}`);
-      console.log(`[desktop-test] BRIDGE_DATA: ${JSON.stringify(bridgeObj)}`);
+      console.log(`[desktop-test] BRIDGE_KEYS: ${JSON.stringify(bridgeKeys)}`);
       console.log("[desktop-test] VERIFICATION_SUCCESS");
       app.quit();
     } catch (err) {

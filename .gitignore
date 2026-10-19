@@ -4,6 +4,10 @@ node_modules/
 # Production and build outputs
 dist/
 build/
+packages/desktop/dist/
+packages/desktop/bin/
+packages/desktop/client-dist/
+packages/desktop/server/
 
 # Environment files and credentials (never commit real secrets)
 .env

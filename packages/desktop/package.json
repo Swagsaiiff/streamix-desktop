@@ -1,14 +1,65 @@
 {
-  "name": "@streamix/desktop",
+  "name": "streamix-desktop",
+  "productName": "STREAMIX",
+  "version": "1.0.0",
+  "description": "Responsive streaming desktop application with native MPV playback",
   "private": true,
-  "version": "0.1.0",
   "type": "module",
   "main": "src/main.js",
+  "author": "STREAMIX Team",
+  "license": "ISC",
   "scripts": {
     "start": "electron .",
-    "test:spike": "node src/spike-mpv.js"
+    "test:spike": "node src/spike-mpv.js",
+    "prepackage": "node scripts/prepare-package.mjs",
+    "package": "npm run prepackage && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
   },
   "devDependencies": {
-    "electron": "^44.9.0"
+    "electron": "44.9.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.streamix.desktop",
+    "productName": "STREAMIX",
+    "electronVersion": "44.9.0",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "client-dist/**/*",
+      "server/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/mpv",
+        "to": "mpv",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "STREAMIX"
+    }
   }
 }

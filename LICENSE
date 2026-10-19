@@ -1,0 +1,45 @@
+ISC License
+
+Copyright (c) 2026 STREAMIX Team
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+### Third-Party Licenses and Redistribution Notices
+
+STREAMIX Desktop integrates and distributes certain open-source third-party software:
+
+1. **MPV (libmpv / mpv.exe)**
+   - Licensed under the GNU General Public License version 2 or later (GPLv2+) and GNU Lesser General Public License version 2.1 or later (LGPLv2.1+).
+   - Source code available at: https://github.com/mpv-player/mpv
+   - MPV binaries included with STREAMIX Desktop are distributed in compliance with the GPL/LGPL terms.
+
+2. **Electron**
+   - Licensed under the MIT License.
+   - Copyright (c) Electron contributors, OpenJS Foundation.
+   - https://github.com/electron/electron
+
+3. **React**
+   - Licensed under the MIT License.
+   - Copyright (c) Meta Platforms, Inc. and affiliates.
+   - https://github.com/facebook/react
+
+4. **Express**
+   - Licensed under the MIT License.
+   - Copyright (c) StrongLoop, Inc., and other expressjs.com contributors.
+   - https://github.com/expressjs/express
+
+5. **FFmpeg / ffprobe (runtime dependency)**
+   - Licensed under LGPL v2.1+ / GPL v2+.
+   - http://ffmpeg.org/

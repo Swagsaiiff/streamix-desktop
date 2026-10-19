@@ -1,91 +1,125 @@
 # STREAMIX Desktop
 
-STREAMIX is a responsive Netflix-style movie and series streaming application powered by real content from provider implementations.
+STREAMIX is a responsive, modern desktop streaming application for Windows that brings movie and series exploration, catalog discovery, and native video playback into a desktop experience.
 
-This repository represents **STREAMIX Desktop** (migrating the working web application baseline to a native desktop shell).
-
----
-
-## Architecture Overview (Phase 2B: Electron Foundation)
-
-In this phase, Electron is introduced as a secure desktop shell surrounding the audited STREAMIX baseline:
-- `packages/client/`: React 19 + Vite 8 frontend.
-- `packages/server/`: Node.js + Express 5 backend with provider scrapers and media processing.
-- `packages/desktop/`: Electron 44 desktop shell and preload bridge.
-
-### Security Model
-The desktop shell adheres strictly to Electron security best practices:
-- `nodeIntegration: false`
-- `contextIsolation: true`
-- `sandbox: true`
-- `webSecurity: true` (never disabled)
-- Navigation is strictly restricted to application origins; external links are dispatched to the system browser via `shell.openExternal`.
-- The preload bridge (`packages/desktop/src/preload.cjs`) exposes only safe read-only identification primitives (`window.streamixDesktop`).
+Powered by:
+- **Desktop Shell:** Electron 44 (secure sandbox, context isolation, zero node integration in renderer)
+- **Frontend UI:** React 19 + Vite 8 Netflix-style user interface
+- **Local Backend:** Node.js + Express 5 running locally on the user's PC (`http://localhost:4000`)
+- **Native Playback:** Portable 64-bit MPV (`mpv.exe`) integration controlled via Windows Named Pipe IPC
+- **Audio & Subtitle Control:** Real-time multi-audio track discovery, selection, and switching
 
 ---
 
-## Getting Started
+## Windows Installation & Running
 
-### 1. Installation
-Install all monorepo workspace dependencies:
+### 1. Download the Installer
+Download the latest Windows installer:
+- **File:** `STREAMIX Setup 1.0.0.exe` (~123 MB)
+- **Architecture:** Windows 10/11 64-bit (x64)
+
+### 2. Run the Installer
+1. Double-click `STREAMIX Setup 1.0.0.exe`.
+2. Follow the NSIS setup wizard prompts to select an installation location and create desktop/Start Menu shortcuts.
+3. Finish the installation and launch **STREAMIX**.
+
+> [!NOTE]
+> **Code Signing Notice:**
+> Open-source release builds of STREAMIX are currently distributed without an expensive commercial EV Code Signing Certificate. If Windows SmartScreen or Windows Defender displays "Windows protected your PC", click **More info** and select **Run anyway**.
+
+### 3. First-Launch Behavior
+- When STREAMIX launches, it automatically checks for and initializes its local background service.
+- The React application UI loads immediately from the bundled local production assets (`client-dist`) without requiring any developer tooling or Vite servers.
+- The home page automatically fetches catalog data from configured providers (such as CineStream).
+- All runtime caches and temporary sessions are written to the user's local application data directory (`%APPDATA%/streamix-desktop`).
+
+---
+
+## Native Playback & Multi-Audio Switching
+
+STREAMIX Desktop features a native MPV media pipeline:
+- **Direct IPC Control:** Electron communicates with MPV over Windows Named Pipes (`\\.\pipe\streamix-mpv-*`).
+- **Comprehensive Controls:** Play, pause, absolute and relative seeking, volume adjustment (0–100%), mute toggle, playback speed control (0.5x–2.0x).
+- **Multi-Audio Track Switching:** MPV probes the media streams, reports all available audio tracks with language codes (`en`, `es`, `hi`, etc.) and titles, and dynamically switches audio tracks mid-playback without reloading the video.
+- **Subtitles:** Subtitle track enumeration and selection.
+- **Clean Exit:** Closing the window or application cleanly terminates the MPV process and shuts down managed backend services without leaving orphaned processes.
+
+---
+
+## Building from Source
+
+### Prerequisites
+- Node.js >= 20.x
+- npm >= 10.x
+- Windows 10 or 11 (64-bit)
+
+### 1. Clone & Install Dependencies
 ```bash
+git clone https://github.com/Swagsaiiff/streamix-desktop.git
+cd streamix-desktop
 npm install
 ```
 
-### 2. Launching the Web Version
-The original web development workflow remains completely intact:
-```bash
-npm run dev
-```
-Starts:
-- Express backend API at `http://localhost:4000`
-- Vite frontend dev server at `http://localhost:5173`
+### 2. Development Workflows
+- **Desktop Development (Electron + Local Backend + Vite Client):**
+  ```bash
+  npm run dev:electron
+  ```
+- **Web-Only Development (Browser):**
+  ```bash
+  npm run dev
+  ```
+  Opens client at `http://localhost:5173` with API backend at `http://localhost:4000`.
+- **Backend Only:**
+  ```bash
+  npm run dev:server
+  ```
+- **Client Only:**
+  ```bash
+  npm run dev:client
+  ```
 
-Individual service commands:
-- `npm run dev:server` — start only the Express backend
-- `npm run dev:client` — start only the Vite client
-- `npm run health` — run backend healthcheck
-
-### 3. Launching the Electron Desktop Application
-Launch the coordinated desktop development stack:
-```bash
-npm run dev:electron
-```
-This single command:
-1. Boots the Express backend on `http://localhost:4000`.
-2. Boots the Vite dev server on `http://localhost:5173` (proxying `/api` requests to Express).
-3. Spawns the Electron application window, which waits for the Vite dev server to become ready before rendering.
-4. Uses `concurrently --kill-others` to guarantee that closing the Electron window terminates the background web and server processes cleanly, preventing orphaned listeners.
-
-If you already have `npm run dev` running in another terminal:
-```bash
-npm run dev:desktop
-```
-This attaches an Electron window directly to the existing dev server.
-
----
-
-## Verification & Testing
-
-- **Full test suite:**
+### 3. Testing & Verification
+- **Run Complete Test Suite (131 tests):**
   ```bash
   npm run test
   ```
-  Runs 97 backend unit/integration tests and 34 client tests (131 total).
-- **Client production build:**
+- **Run Native MPV IPC Spike Test:**
   ```bash
-  npm run build
+  node packages/desktop/src/spike-mpv.js
   ```
-- **Backend health:**
+- **Run Electron UI Automated Verification:**
   ```bash
-  npm run health
+  npx electron packages/desktop --test-verification
   ```
+
+### 4. Build the Windows Installer
+```bash
+npm run package:desktop
+```
+This script:
+1. Compiles the React frontend production bundle via Vite (`packages/client/dist`).
+2. Synchronizes frontend assets and server scripts into `packages/desktop`.
+3. Packages the Electron shell, bundled assets, and native MPV binaries using `electron-builder`.
+4. Generates the NSIS installer at `packages/desktop/dist/STREAMIX Setup 1.0.0.exe`.
 
 ---
 
-## Known Limitations (Phase 2B Scope)
+## Providers & Upstream Limitations
 
-- **Not Standalone Yet:** STREAMIX Desktop in Phase 2B is a desktop shell embedding the Vite dev server and proxying to the local Express backend. It has not yet been converted to a self-contained single-process bundle.
-- **Playback Engine:** Playback remains on the existing HTML5 / `hls.js` + server-side FFmpeg pipeline. Native `libmpv` integration is scheduled for subsequent phases.
-- **Provider Resolution:** Live stream resolution depends on third-party upstream availability (see `DESKTOP_MIGRATION_AUDIT.md` for live provider audit notes). Synthetic test fixture playback remains available via `?fixture=1`.
-- **Packaging:** Production executable packaging (`electron-builder`) will be introduced in packaging phases.
+- **CineStream:** Fully operational for top movies, popular series, catalog browsing, metadata, and search.
+- **VegaMovies:** Provider extraction engine, base64 decoders, HTML link parser, and token chain are implemented and verified via automated test fixtures. Live upstream resolution depends on reachable third-party mirror domains (mirror domains frequently change or experience Cloudflare challenges). When an external mirror is unreachable, the application gracefully reports provider errors without crashing.
+- **TMDB Enrichment:** Optional. TMDB metadata enrichment is enabled when a valid `TMDB_API_KEY` is provided in `.env`.
+
+---
+
+## Open Source Licensing
+
+STREAMIX is released under the **ISC License**. See [LICENSE](LICENSE) for details.
+
+This distribution includes and redistributes third-party open-source components:
+- **MPV:** GNU General Public License v2+ / Lesser General Public License v2.1+ (https://mpv.io)
+- **Electron:** MIT License (https://electronjs.org)
+- **React:** MIT License (https://react.dev)
+- **Express:** MIT License (https://expressjs.com)
+- **FFmpeg:** LGPL v2.1+ / GPL v2+ (https://ffmpeg.org)

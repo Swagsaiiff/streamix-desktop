@@ -27,11 +27,13 @@ export class MpvManager {
   locateBinary() {
     const candidates = [
       process.env.STREAMIX_MPV_PATH,
-      path.resolve(rootDir, "temp/mpv-bin/mpv.exe"),
-      path.resolve(rootDir, "temp/mpv-bin/mpv.com"),
       path.resolve(process.resourcesPath || "", "mpv/mpv.exe"),
       path.resolve(process.resourcesPath || "", "bin/mpv.exe"),
+      path.resolve(__dirname, "../bin/mpv/mpv.exe"),
+      path.resolve(rootDir, "packages/desktop/bin/mpv/mpv.exe"),
       path.resolve(rootDir, "packages/desktop/bin/mpv.exe"),
+      path.resolve(rootDir, "temp/mpv-bin/mpv.exe"),
+      path.resolve(rootDir, "temp/mpv-bin/mpv.com"),
       "mpv.exe",
       "mpv"
     ].filter(Boolean);

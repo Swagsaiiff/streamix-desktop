@@ -2,7 +2,16 @@
 
 ## Current phase
 
-Post-Phase-5 restoration: CSX catalog/search/poster repair and playback honesty (requested repair work).
+Phase 7: Windows Packaging, Final Testing, and Release Preparation (COMPLETED).
+
+### Phase 7 Summary
+- **Packaging:** Configured `electron-builder` with NSIS installer target for Windows x64.
+- **Installer Built:** `packages/desktop/dist/STREAMIX Setup 1.0.0.exe` (129,039,893 bytes / 123.06 MB).
+- **Embedded Components:** Electron 44.9.0 runtime, React 19 production bundle (`client-dist`), Express 5 local backend (`server`), and native MPV x64 portable binaries (`resources/mpv/mpv.exe`).
+- **Offline / Independent Execution:** Verified that Electron boots without Vite or development servers, starts the local backend service automatically, connects to `/api/health`, mounts React UI, and renders 264 cards from CineStream.
+- **Native MPV Playback & Multi-Audio:** Verified through automated IPC spike test (`node packages/desktop/src/spike-mpv.js`) covering playback, seeking, pause/resume, track enumeration, and switching between 2 distinct audio tracks (English -> Spanish).
+- **Test Suite:** 131/131 passing tests (97 backend + 34 frontend).
+- **Licensing & Documentation:** `LICENSE` created with ISC + third-party notices (MPV GPL/LGPL, Electron MIT); `README.md` comprehensively updated.
 
 ## Multi-provider search, search-result details, and real playback (verified)
 

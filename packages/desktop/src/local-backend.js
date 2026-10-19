@@ -1,6 +1,9 @@
 import { fork } from "node:child_process";
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export class LocalBackendService {
   constructor(options = {}) {
@@ -15,9 +18,14 @@ export class LocalBackendService {
   locateServerScript(repoRoot, resourcesPath) {
     const candidates = [
       process.env.STREAMIX_SERVER_ENTRY,
-      path.resolve(repoRoot, "packages/server/src/index.js"),
+      path.resolve(__dirname, "../server/src/index.js"),
+      path.resolve(resourcesPath || "", "app.asar.unpacked/server/src/index.js"),
+      path.resolve(resourcesPath || "", "app/server/src/index.js"),
       path.resolve(resourcesPath || "", "app/packages/server/src/index.js"),
-      path.resolve(resourcesPath || "", "server/index.js")
+      path.resolve(resourcesPath || "", "server/src/index.js"),
+      path.resolve(resourcesPath || "", "server/index.js"),
+      path.resolve(__dirname, "../../server/src/index.js"),
+      repoRoot ? path.resolve(repoRoot, "packages/server/src/index.js") : null
     ].filter(Boolean);
 
     for (const cand of candidates) {
@@ -63,7 +71,7 @@ export class LocalBackendService {
       throw new Error(`[local-backend] Could not find server script entry point.`);
     }
 
-    console.log(`[local-backend] Spawning managed local backend process: ${scriptPath}`);
+    console.log(`[local-backend] Starting local backend: ${scriptPath}`);
     const env = {
       ...process.env,
       PORT: String(this.port),
@@ -71,32 +79,56 @@ export class LocalBackendService {
       NODE_ENV: options.isDev ? "development" : "production"
     };
 
-    this.process = fork(scriptPath, [], {
-      env,
-      silent: true,
-      windowsHide: true
-    });
-    this.isManaged = true;
+    // Attempt fork if not packaged or if executable environment supports it
+    let started = false;
+    try {
+      this.process = fork(scriptPath, [], {
+        env,
+        silent: true,
+        windowsHide: true
+      });
+      this.isManaged = true;
 
-    this.process.stdout?.on("data", (d) => {
-      const msg = d.toString().trim();
-      if (msg) console.log(`[server stdout] ${msg}`);
-    });
+      this.process.stdout?.on("data", (d) => {
+        const msg = d.toString().trim();
+        if (msg) console.log(`[server stdout] ${msg}`);
+      });
 
-    this.process.stderr?.on("data", (d) => {
-      const msg = d.toString().trim();
-      if (msg) console.error(`[server stderr] ${msg}`);
-    });
+      this.process.stderr?.on("data", (d) => {
+        const msg = d.toString().trim();
+        if (msg) console.error(`[server stderr] ${msg}`);
+      });
 
-    this.process.on("exit", (code, signal) => {
-      console.log(`[local-backend] Server process exited with code=${code}, signal=${signal}`);
-      this.process = null;
-    });
+      this.process.on("exit", (code, signal) => {
+        console.log(`[local-backend] Server process exited with code=${code}, signal=${signal}`);
+        this.process = null;
+      });
 
-    const ready = await this.waitForHealth(20000, 300);
-    if (!ready) {
+      started = await this.waitForHealth(5000, 250);
+    } catch (err) {
+      console.warn(`[local-backend] Fork spawn failed: ${err.message}`);
+    }
+
+    // In-process fallback if fork did not become healthy
+    if (!started) {
+      console.log(`[local-backend] Fork not ready, starting local backend in-process...`);
       this.stop();
-      throw new Error(`[local-backend] Server started but failed /api/health check within 20s.`);
+      process.env.PORT = String(this.port);
+      if (options.userDataPath) {
+        process.env.STREAMIX_TEMP_DIR = path.join(options.userDataPath, "temp");
+      }
+      try {
+        await import(pathToFileURL(scriptPath).href);
+        this.isManaged = true;
+        started = await this.waitForHealth(10000, 250);
+      } catch (importErr) {
+        console.error(`[local-backend] In-process start failed: ${importErr.message}`);
+      }
+    }
+
+    if (!started) {
+      this.stop();
+      throw new Error(`[local-backend] Server started but failed /api/health check within timeout.`);
     }
 
     console.log(`[local-backend] Local backend successfully verified and ready at ${this.apiUrl}`);

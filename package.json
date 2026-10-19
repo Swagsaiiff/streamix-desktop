@@ -19,11 +19,13 @@
     "test": "npm run test --workspace=packages/server && node --test \"packages/client/src/lib/*.test.js\"",
     "test:client": "node --test \"packages/client/src/lib/*.test.js\"",
     "start": "npm run start --workspace=packages/server",
-    "health": "node scripts/healthcheck.mjs"
+    "health": "node scripts/healthcheck.mjs",
+    "package:desktop": "npm run build && npm run package --workspace=packages/desktop"
   },
   "devDependencies": {
     "concurrently": "^10.0.6",
-    "electron": "^44.9.0"
+    "electron": "44.9.0",
+    "electron-builder": "^26.15.3"
   },
   "description": "",
   "main": "index.js",
