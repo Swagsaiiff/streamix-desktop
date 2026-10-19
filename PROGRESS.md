@@ -610,3 +610,45 @@ In Electron on Windows with `autoHideMenuBar: true` and no explicit Application 
   - Version auto-incremented to `1.0.3`.
   - Old dist artifacts removed.
   - Output created: `packages/desktop/dist/STREAMIX Setup 1.0.3.exe` and mirror `packages/desktop/dist/setup.exe` (129 MB).
+
+
+## Native Stream Resolution Latency Optimization (COMPLETED)
+
+### Objective
+Diagnose and eliminate the startup delay between clicking Play and video playback starting in STREAMIX Desktop.
+
+### Measured Bottleneck & Diagnosis
+Measurements collected on live streaming titles (e.g. *Inception* 2010):
+- **VegaMovies search & title matching**: ~1,800ms - 3,300ms
+- **Detail-page & host-link extraction**: ~2,200ms - 3,500ms
+- **FFprobe validation & retries**: **7,300ms - 9,500ms** (dominated ~60% of total delay)
+  - Cause: In native desktop mode, `isNative` was not passed to `resolver.resolveStream`, forcing the server to run the full web HLS pipeline which sequentially spawned `ffprobe` over network sockets across multiple quality tiers and candidates with 20s timeouts and duplicate probes for `probeHeight` and `isPlayableMedia`.
+- **MPV start -> playback-restart / file-loaded**: **~1,041ms - 1,343ms**
+  - Confirmed: MPV initializes quickly (~1s); the user-facing startup delay was almost entirely server-side network FFprobe probing.
+
+### Solution Implemented
+1. **Thread `isNative` to Provider Resolver (`packages/server/src/routes/stream.js`, `extractor.js`):**
+   - Passed `isNative` from query mode to `resolver.resolveStream`, `candidate.resolveStream`, and `bridge.resolveByTitle`.
+   - Updated in-flight deduplication key to distinguish native fast-path requests from web HLS requests.
+2. **Native Fast Path in VegaMovies Provider (`packages/server/src/providers/vegamovies.js`):**
+   - When `isNative: true`, once direct signed media URLs are extracted from host links (vcloud, token pages), return them directly to MPV without blocking on network FFprobe.
+   - Built a bounded list of genuine alternate candidates across tiers for MPV to try in order.
+   - Bounded candidate matching to top 2 high-confidence matches in native mode.
+3. **Unified `probeMedia` & Eliminated Duplicate Probes (`vegamovies.js`):**
+   - Merged `probeHeight` and `isPlayableMedia` into a single `probeMedia` method that runs `ffprobe` at most once per candidate URL and caches results.
+   - Reduced FFprobe timeout from 20s to 8s and distinguished permanent HTTP errors (404, 403, 410) so they are not retried.
+4. **MPV Manager & Player Optimization (`packages/desktop/src/mpv-manager.js`, `Player.jsx`):**
+   - Batched property observers with `Promise.all` into a single parallel IPC dispatch.
+   - Configured `--cache-pause=no` and `--demuxer-readahead-secs=5` to prevent startup cache stalls.
+   - Added concise redacted timing measurements across the entire pipeline.
+
+### Verification Results
+- **Timings Before vs After:**
+  - *Inception* (2010) stream resolution: **14,395ms -> 7,033ms (>50% latency reduction, saving >7.3s)**.
+  - MPV native startup: **1,041ms**.
+  - Total time from Play click to video starting dropped from **~16s down to ~8s**.
+- **Unit & Integration Tests:**
+  - `npm test --workspace=packages/server`: 104/104 tests passing (+2 new tests verifying fast path and probe cache).
+  - `npm run build`: built in 331ms.
+  - `STREAMIX_DESKTOP_TEST=1` Electron test: VERIFICATION_SUCCESS.
+  - `npm run package:desktop`: generated Windows installer `STREAMIX Setup 1.0.4.exe` (129 MB) and mirror `setup.exe`.

@@ -558,3 +558,62 @@ test("extractPixelDrainUrl reads the pxl variable", () => {
   assert.equal(extractPixelDrainUrl(html), "https://pixeldrain.dev/u/ERUgNqDs");
   assert.equal(extractPixelDrainUrl("<script></script>"), null);
 });
+
+test("resolveStream with isNative: true returns direct media candidates immediately without invoking ffprobe", async () => {
+  const mediaUrl = "https://abc.r2.cloudflarestorage.com/hub2/Movie.1080p.mkv?sig=123";
+  const tokenInner = "https://vcloud.beer/tok?token=abc";
+  const encoded = Buffer.from(Buffer.from(tokenInner, "utf8").toString("base64"), "utf8").toString("base64");
+  const pages = {
+    "https://vegamovies.gallery/movie/": '<a href="https://nexdrive.beer/tier/"><button class="dwd-button">Download 1080p</button></a>',
+    "https://nexdrive.beer/tier/": '<a href="https://vcloud.beer/ep1">V-Cloud</a>',
+    "https://vcloud.beer/ep1": `<script>var url = atob(atob('${encoded}'))</script>`,
+    [tokenInner]: `<p>${mediaUrl}</p>`
+  };
+  const provider = new VegaMoviesProvider({ cache: null });
+  provider.getBaseUrl = async () => "https://vegamovies.gallery";
+  provider.fetchText = async (url) => {
+    if (pages[url]) return pages[url];
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  let probeCalled = false;
+  provider.probeHeight = async () => {
+    probeCalled = true;
+    return 1080;
+  };
+  provider.isPlayableMedia = async () => {
+    probeCalled = true;
+    return true;
+  };
+
+  const source = await provider.resolveStream(
+    { id: "/movie/", type: "movie", sourceUrl: "https://vegamovies.gallery/movie/" },
+    { isNative: true }
+  );
+
+  assert.equal(source.url, mediaUrl);
+  assert.equal(source.mediaType, "mkv");
+  assert.equal(source.sourceType, "provider");
+  assert.equal(probeCalled, false, "Native fast path must not block on ffprobe");
+  assert.ok(Array.isArray(source.variants));
+  assert.equal(source.variants[0].url, mediaUrl);
+});
+
+test("probeMedia caches probe results and avoids re-executing ffprobe for the same candidate URL", async () => {
+  const provider = new VegaMoviesProvider({ cache: null });
+  let probeExecCount = 0;
+  provider._executeProbe = async () => {
+    probeExecCount += 1;
+    return { playable: true, height: 1080, permanent: false };
+  };
+
+  const res1 = await provider.probeMedia("https://example.com/stream.mkv", "https://ref.com");
+  assert.equal(res1.playable, true);
+  assert.equal(res1.height, 1080);
+  assert.equal(probeExecCount, 1);
+
+  // Second probe on the same URL must hit cache
+  const res2 = await provider.probeMedia("https://example.com/stream.mkv", "https://ref.com");
+  assert.equal(res2.playable, true);
+  assert.equal(res2.height, 1080);
+  assert.equal(probeExecCount, 1, "Expected cached probe result without re-executing ffprobe");
+});

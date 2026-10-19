@@ -1,7 +1,7 @@
 {
   "name": "streamix-desktop",
   "productName": "STREAMIX",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Responsive streaming desktop application with native MPV playback",
   "private": true,
   "type": "module",

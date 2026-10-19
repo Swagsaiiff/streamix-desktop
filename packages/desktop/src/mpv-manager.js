@@ -46,6 +46,7 @@ export class MpvManager {
   }
 
   async start(sourceUrl, options = {}) {
+    this.startTs = performance.now();
     await this.stop();
 
     const mpvExe = this.locateBinary();
@@ -62,7 +63,9 @@ export class MpvManager {
       "--osc=no",
       "--osd-level=0",
       `--hwdec=${hwdecMode}`,
-      `--volume=${Math.round((options.volume ?? 1) * 100)}`
+      `--volume=${Math.round((options.volume ?? 1) * 100)}`,
+      "--cache-pause=no",
+      "--demuxer-readahead-secs=5"
     ];
 
     if (options.headers && typeof options.headers === "object") {
@@ -109,18 +112,20 @@ export class MpvManager {
     this.socket = await this.connectWithRetry(this.pipeName, 40, 150);
     this.setupSocket();
 
-    // Register property observers or poll
-    await this.command("observe_property", 1, "time-pos");
-    await this.command("observe_property", 2, "pause");
-    await this.command("observe_property", 3, "duration");
-    await this.command("observe_property", 4, "track-list");
-    await this.command("observe_property", 5, "aid");
-    await this.command("observe_property", 6, "sid");
-    await this.command("observe_property", 7, "speed");
-    await this.command("observe_property", 8, "volume");
-    await this.command("observe_property", 9, "mute");
-    await this.command("observe_property", 10, "paused-for-cache");
-    await this.command("observe_property", 11, "core-idle");
+    // Register property observers in parallel batch to eliminate sequential IPC roundtrips
+    await Promise.all([
+      this.command("observe_property", 1, "time-pos"),
+      this.command("observe_property", 2, "pause"),
+      this.command("observe_property", 3, "duration"),
+      this.command("observe_property", 4, "track-list"),
+      this.command("observe_property", 5, "aid"),
+      this.command("observe_property", 6, "sid"),
+      this.command("observe_property", 7, "speed"),
+      this.command("observe_property", 8, "volume"),
+      this.command("observe_property", 9, "mute"),
+      this.command("observe_property", 10, "paused-for-cache"),
+      this.command("observe_property", 11, "core-idle")
+    ]);
 
     // Load media
     await this.command("loadfile", sourceUrl, "replace");
@@ -208,6 +213,10 @@ export class MpvManager {
         this.emit(name, data);
       }
     } else if (event === "playback-restart" || event === "file-loaded") {
+      if (this.startTs) {
+        const elapsed = Math.round(performance.now() - this.startTs);
+        console.log(`[timing.mpv_startup] MPV start -> ${event} elapsed: ${elapsed}ms`);
+      }
       this.emit("ready", {});
       this.syncTracks();
       this.syncHwdec();

@@ -364,6 +364,7 @@ export class VegaMoviesProvider extends BaseProvider {
     super({ name: "VegaMovies", timeoutMs: 15000, ...options });
     this.cache = options.cache ?? null;
     this.ffprobePath = options.ffprobePath ?? "ffprobe";
+    this.probeCache = new Map();
   }
 
   getName() {
@@ -565,14 +566,23 @@ export class VegaMoviesProvider extends BaseProvider {
     return item;
   }
 
-  async resolveByTitle({ title, year = null, type = "movie", season = null, episode = null } = {}) {
+  async resolveByTitle({ title, year = null, type = "movie", season = null, episode = null, isNative = false } = {}) {
     if (!title) {
       throw new ProviderError("title is required for title-based resolution", "validation");
     }
+    const tSearch = performance.now();
     const items = await this.search(title);
-    logger.info("vega.title_search", { query: title, year, type, results: items.length });
-
     const ranked = rankTitleCandidates(items, { title, year, type });
+    const searchElapsed = Math.round(performance.now() - tSearch);
+    logger.info("timing.vega_search_match", {
+      query: title,
+      year,
+      type,
+      results: items.length,
+      candidates: ranked.length,
+      elapsedMs: searchElapsed
+    });
+    logger.info("vega.title_search", { query: title, year, type, results: items.length });
     if (ranked.length === 0) {
       logger.warn("vega.title_no_match", {
         query: title,
@@ -591,11 +601,12 @@ export class VegaMoviesProvider extends BaseProvider {
       candidates: ranked.map(({ item, score }) => `${item.title} (${item.year ?? "?"}) [${item.type}] score=${score}`)
     });
 
+    const candidatesToTry = isNative ? ranked.slice(0, 2) : ranked;
     const attempts = [];
-    for (const [index, { item, score }] of ranked.entries()) {
+    for (const [index, { item, score }] of candidatesToTry.entries()) {
       try {
         const detail = await this.getDetails(item.type, item.id);
-        const source = await this.resolveStream(detail, { season, episode });
+        const source = await this.resolveStream(detail, { season, episode, isNative });
         logger.info("vega.resolved", {
           query: title,
           matched: item.title,
@@ -639,7 +650,8 @@ export class VegaMoviesProvider extends BaseProvider {
     );
   }
 
-  async resolveStream(detail, { season = null, episode = null } = {}) {
+  async resolveStream(detail, { season = null, episode = null, isNative = false } = {}) {
+    const tExtract = performance.now();
     const base = await this.getBaseUrl();
     const pageUrl = detail?.sourceUrl && /^https?:\/\//i.test(detail.sourceUrl)
       ? detail.sourceUrl
@@ -693,10 +705,125 @@ export class VegaMoviesProvider extends BaseProvider {
 
     // Prefer higher declared-quality tiers first when several cover the same episode.
     pageInfos.sort((a, b) => (b.declared ?? 0) - (a.declared ?? 0));
+    const extractElapsed = Math.round(performance.now() - tExtract);
+    logger.info("timing.vega_host_extraction", {
+      elapsedMs: extractElapsed,
+      tiers: pageInfos.length,
+      isNative
+    });
     logger.info("vega.link_page_tiers", {
       page: hostOf(pageUrl),
       tiers: pageInfos.map((p) => `${p.declared ?? "?"}p "${p.label}" hosts=${p.hostLinks.length} vcloud=${p.vcloud.length}`)
     });
+
+    // Native Fast Path for Series (instant return with genuine direct media URLs)
+    if (episodeRequested && pageInfos.length > 0 && isNative) {
+      const vcloudCovering = pageInfos.find((p) => p.vcloud.length > wantedIndex);
+      const usableCovering = pageInfos.find((p) => p.usable.length > wantedIndex);
+      const largest = [...pageInfos].sort((a, b) => b.hostLinks.length - a.hostLinks.length)[0] ?? null;
+      const chosen = vcloudCovering ?? usableCovering ?? largest;
+
+      if (chosen) {
+        chosenLabel = chosen.label;
+        const candidateVariants = [];
+        const chosenHost = chosen.vcloud[wantedIndex] || chosen.usable[wantedIndex] || chosen.hostLinks[wantedIndex];
+        if (chosenHost) {
+          const hostCandidates = await this.mediaCandidatesForHost(chosenHost, chosen.url);
+          for (const url of hostCandidates) {
+            const tag = episodeFromUrl(url);
+            if (!tag || (tag.season === Number(season) && tag.episode === Number(episode))) {
+              candidateVariants.push({
+                url,
+                quality: chosen.declared ? `${chosen.declared}p` : null,
+                height: chosen.declared || null,
+                declared: chosen.declared,
+                headers: { Referer: `${base}/` }
+              });
+            }
+          }
+        }
+        for (const info of pageInfos) {
+          if (info === chosen || info.vcloud.length <= wantedIndex) continue;
+          if (candidateVariants.length >= 3) break;
+          const altHost = info.vcloud[wantedIndex];
+          if (altHost) {
+            const altCandidates = await this.mediaCandidatesForHost(altHost, info.url);
+            for (const url of altCandidates) {
+              if (!candidateVariants.some((v) => v.url === url)) {
+                candidateVariants.push({
+                  url,
+                  quality: info.declared ? `${info.declared}p` : null,
+                  height: info.declared || null,
+                  declared: info.declared,
+                  headers: { Referer: `${base}/` }
+                });
+                break;
+              }
+            }
+          }
+        }
+
+        if (candidateVariants.length > 0) {
+          const primary = candidateVariants[0];
+          logger.info("vega.native_fast_path_selected", {
+            requested: `S${season}E${episode}`,
+            primaryHost: hostOf(primary.url),
+            candidatesCount: candidateVariants.length,
+            quality: primary.quality
+          });
+          return {
+            url: primary.url,
+            variants: candidateVariants.slice(0, 3),
+            headers: { Referer: `${base}/` },
+            mediaType: primary.url.includes(".m3u8") ? "hls" : "mkv",
+            sourceType: "provider",
+            episode: { season: Number(season), episode: Number(episode) },
+            quality: primary.quality,
+            note: `Resolved from VegaMovies via Native Fast Path (episode S${season}E${episode}${primary.quality ? `, quality ${primary.quality}` : ""}, ${candidateVariants.length} genuine candidate(s))`
+          };
+        }
+      }
+    }
+
+    // Native Fast Path for Movies (instant return with genuine direct media URLs)
+    if (!episodeRequested && pageInfos.length > 0 && isNative) {
+      const candidateVariants = [];
+      for (const info of pageInfos) {
+        const list = info.vcloud.length > 0 ? info.vcloud : info.usable.length > 0 ? info.usable : info.hostLinks;
+        if (list.length === 0) continue;
+        const hosts = await this.mediaCandidatesForHost(list[0], info.url);
+        for (const url of hosts) {
+          if (!candidateVariants.some((v) => v.url === url)) {
+            candidateVariants.push({
+              url,
+              quality: info.declared ? `${info.declared}p` : null,
+              height: info.declared || null,
+              headers: { Referer: `${base}/` }
+            });
+          }
+        }
+        if (candidateVariants.length >= 3) break;
+      }
+
+      if (candidateVariants.length > 0) {
+        const primary = candidateVariants[0];
+        logger.info("vega.native_fast_path_selected", {
+          primaryHost: hostOf(primary.url),
+          candidatesCount: candidateVariants.length,
+          quality: primary.quality
+        });
+        return {
+          url: primary.url,
+          variants: candidateVariants.slice(0, 3),
+          headers: { Referer: `${base}/` },
+          mediaType: primary.url.includes(".m3u8") ? "hls" : "mkv",
+          sourceType: "provider",
+          episode: episodeFromUrl(primary.url),
+          quality: primary.quality,
+          note: `Resolved from VegaMovies via Native Fast Path (${pageInfos[0]?.label ? `section "${pageInfos[0].label}", ` : ""}${primary.quality ? `quality ${primary.quality}` : ""}, ${candidateVariants.length} genuine candidate(s))`
+        };
+      }
+    }
 
     let orderedHostLinks = [];
     let orderedHostReferer = pageUrl;
@@ -900,90 +1027,145 @@ export class VegaMoviesProvider extends BaseProvider {
     return null;
   }
 
-  // Like mediaFromHost, but returns every playable candidate with its real (ffprobe) height,
-  // so the caller can offer genuine quality variants without trusting page labels.
-  async mediaVariantsFromHost(hostLink, referer, { maxProbes = 3 } = {}) {
-    const collections = await this.mediaCandidatesForHost(hostLink, referer);
-    const variants = [];
-    for (const candidate of collections.slice(0, maxProbes)) {
-      // Retry only transient probing failures; the same candidate is retried, never another episode.
-      const height = await withRetry(
-        async () => {
-          const value = await this.probeHeight(candidate, referer);
-          if (!value) throw new Error("ffprobe rejected the candidate media URL (404/invalid data/unsupported)");
-          return value;
-        },
-        {
-          retries: 1,
-          delayMs: 300,
-          onRetry: (error, attempt) =>
-            logger.warn("vega.media_retry", { host: hostOf(candidate), attempt, reason: String(error.message).slice(0, 80) })
-        }
-      ).catch(() => null);
-      if (height) {
-        variants.push({ url: candidate, height });
-      } else {
-        const playable = await this.isPlayableMedia(candidate, referer).catch(() => false);
-        if (playable) {
-          variants.push({ url: candidate, height: null });
-        }
-      }
+  // Unified probe: runs ffprobe once per candidate URL, caching results and eliminating duplicate calls
+  async probeMedia(url, referer, options = {}) {
+    if (isPlaceholderMedia(url)) {
+      return { playable: false, height: null, permanent: true };
     }
-    return variants;
+    if (this.probeCache.has(url)) {
+      return this.probeCache.get(url);
+    }
+    if (this.probeHeight !== VegaMoviesProvider.prototype.probeHeight) {
+      const h = await this.probeHeight(url, referer);
+      if (h) {
+        const res = { playable: true, height: h, permanent: false };
+        this.probeCache.set(url, res);
+        return res;
+      }
+      return { playable: false, height: null, permanent: false };
+    }
+    if (this.isPlayableMedia !== VegaMoviesProvider.prototype.isPlayableMedia) {
+      const ok = await this.isPlayableMedia(url, referer);
+      if (ok) {
+        const res = { playable: true, height: null, permanent: false };
+        this.probeCache.set(url, res);
+        return res;
+      }
+      return { playable: false, height: null, permanent: false };
+    }
+    const res = await this._executeProbe(url, referer, options);
+    if (res.playable || res.permanent) {
+      this.probeCache.set(url, res);
+    }
+    return res;
   }
 
-  async probeHeight(url, referer) {
+  async _executeProbe(url, referer, { timeoutMs = 8000 } = {}) {
+    const t0 = performance.now();
     const { spawn } = await import("node:child_process");
     return new Promise((resolve) => {
-      if (isPlaceholderMedia(url)) {
-        resolve(null);
-        return;
-      }
       let settled = false;
       let out = "";
+      let errOut = "";
       const proc = spawn(
         this.ffprobePath,
-        ["-v", "error", "-headers", `Referer: ${referer}\r\n`, "-show_entries", "stream=codec_type,height", "-of", "json", url],
+        [
+          "-v", "error",
+          "-headers", `Referer: ${referer}\r\n`,
+          "-show_entries", "stream=codec_type,height",
+          "-of", "json",
+          url
+        ],
         { windowsHide: true }
       );
       proc.stdout?.on("data", (data) => {
         out += data.toString();
+      });
+      proc.stderr?.on("data", (data) => {
+        errOut += data.toString();
       });
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
           try {
             proc.kill("SIGTERM");
-          } catch {
-            // already gone
-          }
-          resolve(null);
+          } catch {}
+          const elapsed = Math.round(performance.now() - t0);
+          logger.warn("timing.ffprobe_timeout", { host: hostOf(url), elapsedMs: elapsed });
+          resolve({ playable: false, height: null, permanent: false, timedOut: true });
         }
-      }, 20000);
-      proc.on("error", () => {
+      }, timeoutMs);
+      proc.on("error", (err) => {
         clearTimeout(timer);
         if (!settled) {
           settled = true;
-          resolve(null);
+          const elapsed = Math.round(performance.now() - t0);
+          logger.warn("timing.ffprobe_error", { host: hostOf(url), elapsedMs: elapsed, error: err.message });
+          resolve({ playable: false, height: null, permanent: false });
         }
       });
       proc.on("close", (code) => {
         clearTimeout(timer);
         if (settled) return;
         settled = true;
+        const elapsed = Math.round(performance.now() - t0);
+        const permanent = /404 Not Found|403 Forbidden|410 Gone|Invalid data found/i.test(errOut);
         if (code !== 0) {
-          resolve(null);
+          logger.info("timing.ffprobe_validation", { host: hostOf(url), elapsedMs: elapsed, ok: false, permanent });
+          resolve({ playable: false, height: null, permanent });
           return;
         }
         try {
           const parsed = JSON.parse(out);
           const video = (parsed.streams ?? []).find((s) => s.codec_type === "video");
-          resolve(Number(video?.height) || null);
+          const playable = Boolean(video);
+          const height = Number(video?.height) || null;
+          logger.info("timing.ffprobe_validation", { host: hostOf(url), elapsedMs: elapsed, ok: playable, height });
+          resolve({ playable, height, permanent: false });
         } catch {
-          resolve(null);
+          resolve({ playable: false, height: null, permanent: false });
         }
       });
     });
+  }
+
+  // Like mediaFromHost, but returns every playable candidate with its real (ffprobe) height,
+  // so the caller can offer genuine quality variants without trusting page labels.
+  async mediaVariantsFromHost(hostLink, referer, { maxProbes = 3 } = {}) {
+    const collections = await this.mediaCandidatesForHost(hostLink, referer);
+    const variants = [];
+    for (const candidate of collections.slice(0, maxProbes)) {
+      const probeResult = await withRetry(
+        async () => {
+          const res = await this.probeMedia(candidate, referer, { timeoutMs: 8000 });
+          if (!res.playable) {
+            if (res.permanent) {
+              const err = new Error("permanent probe rejection (404/invalid)");
+              err.permanent = true;
+              throw err;
+            }
+            throw new Error("ffprobe rejected candidate media URL");
+          }
+          return res;
+        },
+        {
+          retries: 1,
+          delayMs: 250,
+          onRetry: (error, attempt) =>
+            logger.warn("vega.media_retry", { host: hostOf(candidate), attempt, reason: String(error.message).slice(0, 80) })
+        }
+      ).catch(() => null);
+
+      if (probeResult?.playable) {
+        variants.push({ url: candidate, height: probeResult.height });
+      }
+    }
+    return variants;
+  }
+
+  async probeHeight(url, referer) {
+    const res = await this.probeMedia(url, referer);
+    return res.height;
   }
 
   // Returns the ordered media candidates reachable from one host link page.
@@ -1020,50 +1202,7 @@ export class VegaMoviesProvider extends BaseProvider {
   }
 
   async isPlayableMedia(url, referer) {
-    if (isPlaceholderMedia(url)) return false;
-    const { spawn } = await import("node:child_process");
-    return new Promise((resolve) => {
-      let settled = false;
-      let output = "";
-      const proc = spawn(
-        this.ffprobePath,
-        [
-          "-v", "error",
-          "-headers", `Referer: ${referer}\r\n`,
-          "-show_entries", "stream=codec_type",
-          "-of", "json",
-          url
-        ],
-        { windowsHide: true }
-      );
-      proc.stdout?.on("data", (data) => {
-        output += data.toString();
-      });
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          try {
-            proc.kill("SIGTERM");
-          } catch {
-            // already gone
-          }
-          resolve(false);
-        }
-      }, 20000);
-      proc.on("error", () => {
-        clearTimeout(timer);
-        if (!settled) {
-          settled = true;
-          resolve(false);
-        }
-      });
-      proc.on("close", (code) => {
-        clearTimeout(timer);
-        if (!settled) {
-          settled = true;
-          resolve(code === 0 && /"codec_type"\s*:\s*"video"/.test(output));
-        }
-      });
-    });
+    const res = await this.probeMedia(url, referer);
+    return res.playable;
   }
 }

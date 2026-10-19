@@ -146,6 +146,7 @@ export default function Player({ item, onClose, onProgress }) {
       setActiveTrack(null);
       setSubtitleTracks([]);
       setActiveSubtitle("no");
+      const playStartTs = performance.now();
       try {
         const stream = await createStream(playItem.type, playItem.id, {
           signal: controller.signal,
@@ -155,6 +156,8 @@ export default function Player({ item, onClose, onProgress }) {
           episode: playItem.episode,
           mode: isDesktop ? "native" : undefined
         });
+        const streamElapsed = Math.round(performance.now() - playStartTs);
+        console.log(`[timing.player] Stream resolved in ${streamElapsed}ms (mode: ${isDesktop ? "native" : "web"})`);
 
         if (cancelled) {
           if (stream.sessionId) cleanupStream(stream.sessionId);
@@ -184,6 +187,8 @@ export default function Player({ item, onClose, onProgress }) {
 
           adapter.on("ready", () => {
             if (cancelled) return;
+            const readyElapsed = Math.round(performance.now() - playStartTs);
+            console.log(`[timing.player] Native playback ready in ${readyElapsed}ms`);
             setPhase("ready");
             setPlaying(true);
           });

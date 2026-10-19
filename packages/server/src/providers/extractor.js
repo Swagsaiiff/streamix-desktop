@@ -57,7 +57,7 @@ export function createResolver({
   async function doResolve(
     type,
     id,
-    { preferredLanguage = null, provider = null, allowFixture: allowFixtureOverride, season = null, episode = null } = {}
+    { preferredLanguage = null, provider = null, allowFixture: allowFixtureOverride, season = null, episode = null, isNative = false } = {}
   ) {
     const validType = validateType(type);
     if (!validType) {
@@ -95,7 +95,7 @@ export function createResolver({
 
       const capabilities = candidate.getCapabilities();
       if (capabilities.supportsStreamResolution === true && typeof candidate.resolveStream === "function") {
-        const source = await candidate.resolveStream(detail, { preferredLanguage, season, episode });
+        const source = await candidate.resolveStream(detail, { preferredLanguage, season, episode, isNative });
         return {
           provider: { name: candidate.getName(), resolution: "provider_stream" },
           resolution: {
@@ -140,7 +140,8 @@ export function createResolver({
             year: resolvedDetail.year ?? null,
             type: validType,
             season,
-            episode
+            episode,
+            isNative
           });
           return {
             provider: { name: bridge.getName(), resolution: "provider_stream" },
@@ -207,7 +208,7 @@ export function createResolver({
   }
 
   function resolveStream(type, id, options) {
-    const key = `${type}:${id}:${options?.provider ?? ""}:${options?.season ?? ""}:${options?.episode ?? ""}`;
+    const key = `${type}:${id}:${options?.provider ?? ""}:${options?.season ?? ""}:${options?.episode ?? ""}:${options?.isNative ? "native" : "web"}`;
     if (inFlight.has(key)) {
       return inFlight.get(key);
     }

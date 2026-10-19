@@ -82,13 +82,24 @@ export function streamRouter({
           : undefined;
 
     try {
+      const tResolveStart = performance.now();
       logger.info("stream.resolve", { type, id, preferredLanguage, provider: providerName, mode: isNative ? "native" : "web" });
       const stream = await resolver.resolveStream(type, id, {
         preferredLanguage,
         provider: providerName,
         allowFixture,
         season: Number.isFinite(season) ? season : null,
-        episode: Number.isFinite(episode) ? episode : null
+        episode: Number.isFinite(episode) ? episode : null,
+        isNative
+      });
+      const resolveElapsed = Math.round(performance.now() - tResolveStart);
+      logger.info("timing.stream_resolve_total", {
+        type,
+        id,
+        elapsedMs: resolveElapsed,
+        mode: isNative ? "native" : "web",
+        provider: stream.provider?.name,
+        sourceType: stream.sourceType
       });
       logger.info("stream.source_resolved", {
         sourceType: stream.sourceType,
@@ -137,8 +148,8 @@ export function streamRouter({
           candidates: Array.isArray(stream.variants)
             ? stream.variants.map((v) => ({
                 url: v.url ?? stream.sourceUrl,
-                quality: v.height ? `${v.height}p` : null,
-                headers: stream.headers ?? {}
+                quality: v.quality || (v.height ? `${v.height}p` : null),
+                headers: v.headers || stream.headers || {}
               }))
             : stream.sourceUrl
               ? [{ url: stream.sourceUrl, quality: stream.resolution?.quality ?? null, headers: stream.headers ?? {} }]
