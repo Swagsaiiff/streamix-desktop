@@ -105,6 +105,11 @@ export function createDesktopMpvAdapter() {
     async setSubtitleTrack(trackId) {
       return await mpv.setSubtitleTrack(trackId);
     },
+    async setBounds(bounds) {
+      if (typeof mpv.setBounds === "function") {
+        return await mpv.setBounds(bounds);
+      }
+    },
     on(event, callback) {
       if (!listeners.has(event)) {
         listeners.set(event, new Set());

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { createStream, cleanupStream } from "../api.js";
+import { createStream, cleanupStream, createLazyHlsSession } from "../api.js";
 import { audioTrackLabel } from "../lib/languages.js";
 import {
   AUTO_QUALITY,
@@ -42,6 +42,7 @@ function buildEpisodeQueue(item) {
 export default function Player({ item, onClose, onProgress }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
+  const canvasRef = useRef(null);
   const hlsRef = useRef(null);
   const mpvAdapterRef = useRef(null);
   const sessionRef = useRef(null);
@@ -151,15 +152,16 @@ export default function Player({ item, onClose, onProgress }) {
           lang: preferredLang || undefined,
           provider: playItem.provider,
           season: playItem.season,
-          episode: playItem.episode
+          episode: playItem.episode,
+          mode: isDesktop ? "native" : undefined
         });
 
         if (cancelled) {
-          cleanupStream(stream.sessionId);
+          if (stream.sessionId) cleanupStream(stream.sessionId);
           return;
         }
 
-        sessionRef.current = stream.sessionId;
+        sessionRef.current = stream.sessionId || stream.fallbackTicket || null;
         setSourceNote(stream.note ?? null);
         setSourceStatus(stream.resolution?.status ?? null);
         setSourceProvider(stream.provider?.name ?? null);
@@ -277,9 +279,21 @@ export default function Player({ item, onClose, onProgress }) {
               : [];
 
           const apiOrigin = (window.streamixDesktop?.apiUrl || (window.location.origin.startsWith("http") ? window.location.origin : "http://localhost:4000")).replace(/\/+$/, "");
-          const hlsPlaylistUrl = stream.playlistUrl.startsWith("http")
-            ? stream.playlistUrl
-            : `${apiOrigin}${stream.playlistUrl}`;
+          let hlsPlaylistUrl = stream.playlistUrl
+            ? (stream.playlistUrl.startsWith("http") ? stream.playlistUrl : `${apiOrigin}${stream.playlistUrl}`)
+            : null;
+
+          const computeBounds = () => {
+            if (!canvasRef.current) return { x: 0, y: 56, width: 1280, height: 648 };
+            const rect = canvasRef.current.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            return {
+              x: Math.round(rect.left * dpr),
+              y: Math.round(rect.top * dpr),
+              width: Math.max(1, Math.round(rect.width * dpr)),
+              height: Math.max(1, Math.round(rect.height * dpr))
+            };
+          };
 
           let candidateIndex = 0;
           let currentTargetUrl = candidates[0]?.url || hlsPlaylistUrl;
@@ -298,7 +312,8 @@ export default function Player({ item, onClose, onProgress }) {
                 await adapter.load(currentTargetUrl, {
                   volume: 1,
                   headers: currentHeaders,
-                  startTime: saved?.position
+                  startTime: saved?.position,
+                  bounds: computeBounds()
                 });
                 return;
               } catch (nextErr) {
@@ -306,14 +321,30 @@ export default function Player({ item, onClose, onProgress }) {
               }
             }
 
-            // If all direct candidates failed, fallback to local server HLS transcode
+            // If all direct candidates failed, fallback to local server HLS transcode (lazy or prebuilt)
+            if (stream.fallbackTicket && !hlsPlaylistUrl) {
+              try {
+                console.warn("[Player] All direct sources failed, creating lazy HLS fallback session...");
+                const lazySession = await createLazyHlsSession(stream.fallbackTicket);
+                if (lazySession?.playlistUrl) {
+                  hlsPlaylistUrl = lazySession.playlistUrl.startsWith("http")
+                    ? lazySession.playlistUrl
+                    : `${apiOrigin}${lazySession.playlistUrl}`;
+                  sessionRef.current = lazySession.sessionId;
+                }
+              } catch (lazyErr) {
+                console.error("[Player] Lazy HLS fallback creation failed:", lazyErr);
+              }
+            }
+
             if (currentTargetUrl !== hlsPlaylistUrl && hlsPlaylistUrl) {
-              console.warn("[Player] All direct sources failed, falling back to local server HLS transcode:", err);
+              console.warn("[Player] Falling back to local server HLS transcode:", hlsPlaylistUrl);
               currentTargetUrl = hlsPlaylistUrl;
               try {
                 await adapter.load(hlsPlaylistUrl, {
                   volume: 1,
-                  startTime: saved?.position
+                  startTime: saved?.position,
+                  bounds: computeBounds()
                 });
                 return;
               } catch (fallbackErr) {
@@ -329,7 +360,8 @@ export default function Player({ item, onClose, onProgress }) {
           await adapter.load(currentTargetUrl, {
             volume: 1,
             headers: currentHeaders,
-            startTime: saved?.position
+            startTime: saved?.position,
+            bounds: computeBounds()
           });
 
           setPhase("ready");
@@ -718,6 +750,29 @@ export default function Player({ item, onClose, onProgress }) {
     };
   }, [bumpControls]);
 
+  useEffect(() => {
+    if (!isDesktop) return;
+    const updateBounds = () => {
+      if (!canvasRef.current || !mpvAdapterRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      mpvAdapterRef.current.setBounds({
+        x: Math.round(rect.left * dpr),
+        y: Math.round(rect.top * dpr),
+        width: Math.max(1, Math.round(rect.width * dpr)),
+        height: Math.max(1, Math.round(rect.height * dpr))
+      }).catch(() => {});
+    };
+    updateBounds();
+    const observer = new ResizeObserver(updateBounds);
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    window.addEventListener("resize", updateBounds);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateBounds);
+    };
+  }, [isDesktop, controlsVisible, fullscreen, phase]);
+
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const bufferedPct = duration > 0 ? Math.min(100, (buffered / duration) * 100) : 0;
   const qualityInfo = buildQualityOptions(levels, activeLevel);
@@ -748,7 +803,7 @@ export default function Player({ item, onClose, onProgress }) {
       )}
 
       {isDesktop && (
-        <div className="player-desktop-canvas" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
+        <div ref={canvasRef} className="player-desktop-canvas" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
           <div className="player-desktop-badge">Native MPV Active</div>
         </div>
       )}

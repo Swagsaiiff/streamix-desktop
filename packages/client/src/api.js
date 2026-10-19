@@ -43,18 +43,28 @@ export function fetchDetail(type, id, { provider, ...options } = {}) {
   return request(`/api/detail/${type}/${encodeURIComponent(id)}${query}`, options);
 }
 
-export function createStream(type, id, { lang, provider, season, episode, ...options } = {}) {
+export function createStream(type, id, { lang, provider, season, episode, mode, ...options } = {}) {
   const base = `/api/stream/${type}/${encodeURIComponent(id)}`;
   const params = new URLSearchParams();
   if (lang) params.set("lang", lang);
   if (provider) params.set("provider", provider);
   if (season != null) params.set("season", String(season));
   if (episode != null) params.set("episode", String(episode));
+  if (mode) params.set("mode", mode);
   const query = params.toString();
   const path = query ? `${base}?${query}` : base;
   return request(path, { method: "POST", ...options });
 }
 
+export function createLazyHlsSession(ticket) {
+  return request("/api/stream/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticket })
+  });
+}
+
 export function cleanupStream(sessionId) {
+  if (!sessionId) return Promise.resolve(null);
   return request(`/api/stream/${encodeURIComponent(sessionId)}`, { method: "DELETE" }).catch(() => null);
 }

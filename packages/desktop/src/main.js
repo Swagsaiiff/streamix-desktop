@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { MpvManager } from "./mpv-manager.js";
 import { LocalBackendService } from "./local-backend.js";
+import { VideoHostManager } from "./video-host.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -33,6 +34,7 @@ function resolveClientDist() {
 
 let mainWindow = null;
 const mpv = new MpvManager();
+const videoHost = new VideoHostManager();
 const localBackend = new LocalBackendService({
   port: Number(process.env.PORT) || 4000
 });
@@ -58,8 +60,15 @@ mpv.onEvent = (type, data) => {
 };
 
 // Register safe IPC handlers for MPV player control
-ipcMain.handle("mpv:start", async (_event, sourceUrl, options) => {
+ipcMain.handle("mpv:start", async (_event, sourceUrl, options = {}) => {
   try {
+    if (mainWindow && !mainWindow.isDestroyed() && !options.wid) {
+      const handleBuffer = mainWindow.getNativeWindowHandle();
+      const parentHwnd = process.arch === "x64" ? handleBuffer.readBigUInt64LE(0) : handleBuffer.readUInt32LE(0);
+      const bounds = options.bounds || { x: 0, y: 56, width: 1280, height: 648 };
+      const childHwnd = await videoHost.createHost(parentHwnd.toString(), bounds);
+      options.wid = childHwnd.toString();
+    }
     return await mpv.start(sourceUrl, options);
   } catch (err) {
     console.error("[main] Failed to start MPV:", err.message);
@@ -67,7 +76,14 @@ ipcMain.handle("mpv:start", async (_event, sourceUrl, options) => {
   }
 });
 
+ipcMain.handle("mpv:set-bounds", async (_event, bounds) => {
+  if (bounds && typeof bounds === "object") {
+    return await videoHost.setBounds(bounds);
+  }
+});
+
 ipcMain.handle("mpv:stop", async () => {
+  await videoHost.destroy();
   return await mpv.stop();
 });
 
@@ -206,8 +222,17 @@ async function createWindow() {
     }
   }
 
+  mainWindow.on("minimize", () => {
+    videoHost.hide().catch(() => {});
+  });
+
+  mainWindow.on("restore", () => {
+    videoHost.show().catch(() => {});
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
+    videoHost.stop().catch(() => {});
     mpv.stop().catch(() => {});
   });
 }
@@ -239,11 +264,13 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  videoHost.stop().catch(() => {});
   mpv.stop().catch(() => {});
   localBackend.stop();
 });
 
 app.on("window-all-closed", () => {
+  videoHost.stop().catch(() => {});
   mpv.stop().catch(() => {});
   localBackend.stop();
   app.quit();

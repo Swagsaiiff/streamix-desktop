@@ -58,7 +58,8 @@ export class MpvManager {
       "--no-terminal",
       "--keep-open=yes",
       "--force-window=yes",
-      "--title=STREAMIX Native Player",
+      "--osc=no",
+      "--osd-level=0",
       `--volume=${Math.round((options.volume ?? 1) * 100)}`
     ];
 
@@ -82,6 +83,8 @@ export class MpvManager {
 
     if (options.wid) {
       mpvArgs.push(`--wid=${options.wid}`);
+    } else {
+      mpvArgs.push("--title=STREAMIX Native Player");
     }
 
     this.proc = spawn(mpvExe, mpvArgs, {

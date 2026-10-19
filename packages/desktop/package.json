@@ -42,6 +42,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "bin/streamix-video-host.exe",
+        "to": "streamix-video-host.exe"
       }
     ],
     "win": {

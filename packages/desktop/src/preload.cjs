@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld("streamixDesktop", {
     setSpeed: (speed) => ipcRenderer.invoke("mpv:set-speed", speed),
     setAudioTrack: (aid) => ipcRenderer.invoke("mpv:set-audio-track", aid),
     setSubtitleTrack: (sid) => ipcRenderer.invoke("mpv:set-subtitle-track", sid),
+    setBounds: (bounds) => ipcRenderer.invoke("mpv:set-bounds", bounds),
     onEvent: (callback) => {
       if (typeof callback !== "function") return () => {};
       const subscription = (_event, { type, data }) => {

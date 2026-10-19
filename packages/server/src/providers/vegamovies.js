@@ -669,26 +669,28 @@ export class VegaMoviesProvider extends BaseProvider {
     // Inspect every link page: each is a per-quality tier that repeats the same episode range,
     // and the resolvable episode links (vcloud) can live on a different page than the
     // unresolvable mirrors (fastdl/filebee), so gather them all before choosing.
-    const pageInfos = [];
-    for (const linkPage of linkPages) {
-      let probeHtml;
+    // Inspect link pages in parallel with bounded concurrency
+    const pagePromises = linkPages.map(async (linkPage) => {
       try {
-        probeHtml = await this.fetchText(linkPage.url, { headers: { Referer: pageUrl }, timeoutMs: 12000 });
+        const probeHtml = await this.fetchText(linkPage.url, { headers: { Referer: pageUrl }, timeoutMs: 8000 });
+        const hostLinks = extractHostLinks(probeHtml);
+        return {
+          url: linkPage.url,
+          label: linkPage.label,
+          heading: linkPage.heading ?? null,
+          declared: declaredQuality(linkPage.heading),
+          hostLinks,
+          vcloud: hostLinks.filter((href) => /vcloud\./i.test(href)),
+          usable: hostLinks.filter((href) => !/fastdl\.|filebee\./i.test(href))
+        };
       } catch {
         logger.warn("vega.link_page_failed", { host: hostOf(linkPage.url), label: linkPage.label });
-        continue;
+        return null;
       }
-      const hostLinks = extractHostLinks(probeHtml);
-      pageInfos.push({
-        url: linkPage.url,
-        label: linkPage.label,
-        heading: linkPage.heading ?? null,
-        declared: declaredQuality(linkPage.heading),
-        hostLinks,
-        vcloud: hostLinks.filter((href) => /vcloud\./i.test(href)),
-        usable: hostLinks.filter((href) => !/fastdl\.|filebee\./i.test(href))
-      });
-    }
+    });
+    const settledPages = await Promise.all(pagePromises);
+    const pageInfos = settledPages.filter(Boolean);
+
     // Prefer higher declared-quality tiers first when several cover the same episode.
     pageInfos.sort((a, b) => (b.declared ?? 0) - (a.declared ?? 0));
     logger.info("vega.link_page_tiers", {
@@ -743,8 +745,7 @@ export class VegaMoviesProvider extends BaseProvider {
         target: redactUrl(orderedHostLinks[wantedIndex] ?? null)
       });
 
-      // Resolve the same episode from each quality tier and keep the real resolutions, so the
-      // best rendition can be preferred (and lower ones offered as genuine variants).
+      // Resolve the same episode from each quality tier and keep the real resolutions
       const collected = [];
       for (const info of pageInfos) {
         const list = info.vcloud.length > 0 ? info.vcloud : info.usable;
@@ -755,6 +756,10 @@ export class VegaMoviesProvider extends BaseProvider {
           if (!collected.some((v) => v.url === variant.url)) {
             collected.push({ ...variant, declared: info.declared, label: info.label });
           }
+        }
+        // If we found a high quality variant for the requested episode, stop probing lower tiers
+        if (collected.length > 0 && (collected[0].height >= 720 || (collected[0].declared && collected[0].declared >= 720))) {
+          break;
         }
       }
 
@@ -789,53 +794,7 @@ export class VegaMoviesProvider extends BaseProvider {
       );
     }
 
-    for (const linkPage of linkPages) {
-      if (selectMediaCandidates(candidates).length >= 3) break;
-      let linkHtml;
-      try {
-        linkHtml = await this.fetchText(linkPage.url, {
-          headers: { Referer: pageUrl },
-          timeoutMs: 12000
-        });
-      } catch {
-        logger.warn("vega.link_page_failed", { host: hostOf(linkPage.url) });
-        continue;
-      }
-      for (const mediaUrl of extractDirectMediaUrls(linkHtml)) candidates.add(mediaUrl);
-
-      for (const hostLink of extractHostLinks(linkHtml).slice(0, 6)) {
-        if (selectMediaCandidates(candidates).length >= 3) break;
-        try {
-          const hostHtml = await this.fetchText(hostLink, {
-            headers: { Referer: linkPage.url },
-            timeoutMs: 12000
-          });
-          for (const mediaUrl of extractDirectMediaUrls(hostHtml)) candidates.add(mediaUrl);
-
-          const vcloudToken = extractDoubleAtobValue(hostHtml);
-          if (vcloudToken && /^https?:\/\//i.test(vcloudToken)) {
-            const tokenHtml = await this.fetchText(vcloudToken, {
-              headers: { Referer: hostLink },
-              timeoutMs: 12000
-            });
-            for (const mediaUrl of extractDirectMediaUrls(tokenHtml)) candidates.add(mediaUrl);
-            const pxl = extractPixelDrainUrl(tokenHtml);
-            if (pxl) {
-              const pxId = pxl.split("/").filter(Boolean).pop();
-              if (pxId) candidates.add(`https://pixeldrain.com/api/file/${pxId}?download`);
-            }
-          }
-        } catch {
-          // individual host failures must not abort resolution
-        }
-      }
-      if (selectMediaCandidates(candidates).length > 0 && !chosenLabel) {
-        chosenLabel = linkPage.label;
-      }
-    }
-
-    // Movie path: gather genuine quality variants across the per-quality link pages as well,
-    // so a 480p mirror is never the only rendition offered when 720p/1080p exist.
+    // Movie path: gather genuine quality variants across the per-quality link pages
     const movieVariants = [];
     for (const info of pageInfos) {
       const list = info.vcloud.length > 0 ? info.vcloud : info.usable.length > 0 ? info.usable : info.hostLinks;
@@ -846,72 +805,60 @@ export class VegaMoviesProvider extends BaseProvider {
           movieVariants.push({ ...variant, declared: info.declared, label: info.label });
         }
       }
+      if (found.length > 0 && !chosenLabel) {
+        chosenLabel = info.label;
+      }
+      // If we already found a verified high quality (>= 720p) stream, stop sequentially probing lower tiers
+      if (movieVariants.length > 0 && ((movieVariants[0].height && movieVariants[0].height >= 720) || (movieVariants[0].declared && movieVariants[0].declared >= 720))) {
+        break;
+      }
     }
 
-    const ranked = selectMediaCandidates(candidates);
-    const selection = pickCandidateForEpisode(ranked, { season, episode });
-    logger.info("vega.extraction_candidates", {
-      page: hostOf(pageUrl),
-      total: ranked.length,
-      hosts: [...new Set(ranked.map((url) => hostOf(url)).filter(Boolean))],
-      requestedEpisode: season != null && episode != null ? `S${season}E${episode}` : null,
-      matchedEpisode: selection.matched
-    });
-
-    if (season != null && episode != null && !selection.matched) {
-      logger.warn("vega.episode_not_found", {
-        requested: `S${season}E${episode}`,
-        available: (selection.available ?? []).slice(0, 8).map((ep) => `S${ep.season}E${ep.episode}`)
-      });
-      throw new ProviderError(
-        `VegaMovies links for this title do not include episode S${season}E${episode}${
-          selection.available?.length ? ` (available: ${selection.available.slice(0, 6).map((ep) => `S${ep.season}E${ep.episode}`).join(", ")})` : ""
-        }`,
-        "not_found"
-      );
-    }
-
-    // Prefer the highest real resolution discovered across the quality tiers.
+    // Prefer the highest real resolution discovered across the quality tiers
     const bestVariants = sortVariantsByQuality(movieVariants);
-    const ordered = bestVariants.length > 0
-      ? [
-          ...bestVariants.map((v) => v.url),
-          ...(selection.url ? [selection.url] : []),
-          ...ranked.filter((url) => !bestVariants.some((v) => v.url === url))
-        ]
-      : selection.url
-        ? [selection.url, ...ranked.filter((url) => url !== selection.url)]
-        : ranked;
+    if (bestVariants.length > 0) {
+      const chosen = bestVariants[0];
+      logger.info("vega.media_validated", {
+        host: hostOf(chosen.url),
+        quality: `${chosen.height}p`,
+        variants: bestVariants.map((v) => `${v.height}p`),
+        url: redactUrl(chosen.url)
+      });
+      return {
+        url: chosen.url,
+        variants: bestVariants.length > 1 ? bestVariants.slice(0, 3) : undefined,
+        headers: { Referer: `${base}/` },
+        mediaType: chosen.url.includes(".m3u8") ? "hls" : "mkv",
+        sourceType: "provider",
+        episode: episodeFromUrl(chosen.url),
+        quality: chosen.height ? `${chosen.height}p` : null,
+        note: `Resolved from VegaMovies (real provider source${chosenLabel ? `; section "${chosenLabel}"` : ""}${chosen.height ? `, best quality ${chosen.height}p` : ""}${
+          bestVariants.length > 1 ? ` of ${bestVariants.length} available` : ""
+        })`
+      };
+    }
 
-    for (const candidate of ordered) {
+    // Fallback: check direct media candidates discovered from detail HTML
+    const ranked = selectMediaCandidates(candidates);
+    for (const candidate of ranked) {
       const playable = await withRetry(
         async () => {
           const ok = await this.isPlayableMedia(candidate, pageUrl);
-          if (!ok) throw new Error("ffprobe rejected the candidate media URL (404/invalid data/unsupported)");
+          if (!ok) throw new Error("ffprobe rejected the candidate media URL");
           return true;
         },
-        {
-          retries: 1,
-          delayMs: 400,
-          onRetry: (error, attempt) =>
-            logger.warn("vega.media_retry", { host: hostOf(candidate), attempt, reason: String(error.message).slice(0, 80) })
-        }
+        { retries: 1, delayMs: 400 }
       ).catch(() => false);
-      logger.info("vega.ffprobe_check", { host: hostOf(candidate), playable, url: redactUrl(candidate) });
       if (playable) {
         logger.info("vega.media_validated", { host: hostOf(candidate), mediaType: candidate.includes(".m3u8") ? "hls" : "mkv" });
-        const height = bestVariants.find((v) => v.url === candidate)?.height ?? null;
         return {
           url: candidate,
-          variants: bestVariants.length > 1 ? bestVariants.slice(0, 3) : undefined,
           headers: { Referer: `${base}/` },
           mediaType: candidate.includes(".m3u8") ? "hls" : "mkv",
           sourceType: "provider",
           episode: episodeFromUrl(candidate),
-          quality: height ? `${height}p` : null,
-          note: `Resolved from VegaMovies (real provider source${chosenLabel ? `; section "${chosenLabel}"` : ""}${height ? `, best quality ${height}p` : ""}${
-            bestVariants.length > 1 ? ` of ${bestVariants.length} available` : ""
-          })`
+          quality: null,
+          note: `Resolved from VegaMovies (real provider source${chosenLabel ? `; section "${chosenLabel}"` : ""})`
         };
       }
     }
@@ -973,7 +920,14 @@ export class VegaMoviesProvider extends BaseProvider {
             logger.warn("vega.media_retry", { host: hostOf(candidate), attempt, reason: String(error.message).slice(0, 80) })
         }
       ).catch(() => null);
-      if (height) variants.push({ url: candidate, height });
+      if (height) {
+        variants.push({ url: candidate, height });
+      } else {
+        const playable = await this.isPlayableMedia(candidate, referer).catch(() => false);
+        if (playable) {
+          variants.push({ url: candidate, height: null });
+        }
+      }
     }
     return variants;
   }

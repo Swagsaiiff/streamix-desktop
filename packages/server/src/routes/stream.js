@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomUUID } from "node:crypto";
 import { sendError } from "../errors.js";
 import { logger } from "../logger.js";
 import { ProviderError } from "../providers/base.js";
@@ -6,6 +7,18 @@ import { ProviderError } from "../providers/base.js";
 const SESSION_ID_RE = /^[a-f0-9]{64}$/;
 const FILE_RE = /^[A-Za-z0-9._-]+$/;
 const inflightSessions = new Map();
+const resolutionTickets = new Map();
+const TICKET_TTL_MS = 10 * 60 * 1000;
+
+function pruneTickets() {
+  const now = Date.now();
+  for (const [id, item] of resolutionTickets.entries()) {
+    if (now - item.createdAt > TICKET_TTL_MS) {
+      resolutionTickets.delete(id);
+    }
+  }
+}
+setInterval(pruneTickets, 60000).unref?.();
 
 function validSessionId(value) {
   return typeof value === "string" && SESSION_ID_RE.test(value);
@@ -25,8 +38,37 @@ export function streamRouter({
 }) {
   const router = Router();
 
+  router.post("/stream/session", async (req, res) => {
+    const { ticket } = req.body || {};
+    if (!ticket || typeof ticket !== "string") {
+      return res.status(400).json({ error: "validation_error", message: "A valid ticket is required" });
+    }
+    const saved = resolutionTickets.get(ticket);
+    if (!saved || Date.now() - saved.createdAt > TICKET_TTL_MS) {
+      if (saved) resolutionTickets.delete(ticket);
+      return res.status(404).json({ error: "not_found", message: "Fallback ticket has expired or is invalid" });
+    }
+    try {
+      const { stream, preferredLanguage } = saved;
+      const session = await streamManager.createSession(stream.sourceUrl, {
+        preferredLanguage,
+        maxSeconds: sessionMaxSeconds,
+        headers: stream.headers ?? {},
+        variants: stream.variants ?? null
+      });
+      res.status(201).json({
+        sessionId: session.sessionId,
+        status: session.status,
+        playlistUrl: `/api/stream/${session.sessionId}/master.m3u8`
+      });
+    } catch (err) {
+      return sendError(res, err);
+    }
+  });
+
   router.post("/stream/:type/:id", async (req, res) => {
     const { type, id } = req.params;
+    const isNative = req.query.mode === "native";
     const preferredLanguage =
       req.query.lang ?? req.query.preferredLanguage ?? defaultLanguage ?? null;
     const providerName = req.query.provider ? String(req.query.provider) : null;
@@ -40,7 +82,7 @@ export function streamRouter({
           : undefined;
 
     try {
-      logger.info("stream.resolve", { type, id, preferredLanguage, provider: providerName });
+      logger.info("stream.resolve", { type, id, preferredLanguage, provider: providerName, mode: isNative ? "native" : "web" });
       const stream = await resolver.resolveStream(type, id, {
         preferredLanguage,
         provider: providerName,
@@ -56,6 +98,54 @@ export function streamRouter({
 
       if (stream.sourceType === "local_fixture") {
         logger.warn("stream.fixture_fallback", { type, id, provider: providerName });
+      }
+
+      if (isNative) {
+        const ticketId = randomUUID();
+        resolutionTickets.set(ticketId, {
+          stream,
+          preferredLanguage,
+          createdAt: Date.now()
+        });
+        logger.info("stream.native_fast_path", {
+          type,
+          id,
+          provider: stream.provider?.name,
+          ticket: ticketId
+        });
+
+        return res.status(201).json({
+          sessionId: null,
+          nativeOnly: true,
+          fallbackTicket: ticketId,
+          provider: stream.provider,
+          resolution: stream.resolution,
+          quality: stream.resolution?.quality ?? null,
+          qualities: Array.isArray(stream.variants) ? stream.variants.map((variant) => `${variant.height}p`) : null,
+          status: "ready",
+          streamMode: "native",
+          streamModeReason: "native direct playback",
+          audioTracks: [],
+          preferredLanguage,
+          title: stream.title,
+          year: stream.year,
+          episode: stream.episode ?? null,
+          mediaType: stream.mediaType,
+          sourceUrl: stream.sourceUrl ?? null,
+          headers: stream.headers ?? {},
+          sourceType: stream.sourceType ?? stream.resolution?.sourceType ?? "provider",
+          candidates: Array.isArray(stream.variants)
+            ? stream.variants.map((v) => ({
+                url: v.url ?? stream.sourceUrl,
+                quality: v.height ? `${v.height}p` : null,
+                headers: stream.headers ?? {}
+              }))
+            : stream.sourceUrl
+              ? [{ url: stream.sourceUrl, quality: stream.resolution?.quality ?? null, headers: stream.headers ?? {} }]
+              : [],
+          note: stream.note ?? null,
+          playlistUrl: null
+        });
       }
 
       const dedupeKey = `${stream.provider.name}:${type}:${id}:${season ?? ""}:${episode ?? ""}:${preferredLanguage ?? ""}:${stream.sourceUrl}`;
@@ -174,6 +264,10 @@ export function streamRouter({
 
   router.delete("/stream/:sessionId", async (req, res) => {
     const { sessionId } = req.params;
+    if (resolutionTickets.has(sessionId)) {
+      resolutionTickets.delete(sessionId);
+      return res.json({ status: "cleaned" });
+    }
     if (!validSessionId(sessionId)) {
       return res.status(400).json({ error: "validation_error", message: "Invalid session id" });
     }

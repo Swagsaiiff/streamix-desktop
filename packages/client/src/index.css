@@ -722,6 +722,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: top 0.2s ease, bottom 0.2s ease, height 0.2s ease;
+}
+
+.player.controls-visible .player-desktop-canvas {
+  top: 56px;
+  bottom: 96px;
+  height: calc(100% - 152px);
+}
+
+.player.controls-hidden .player-desktop-canvas {
+  top: 0;
+  bottom: 0;
+  height: 100%;
 }
 
 .player-desktop-badge {

@@ -60,4 +60,16 @@ if (!fs.existsSync(mpvExe)) {
   console.log(`[prepare-package] Verified native MPV binary present at ${mpvExe}`);
 }
 
+// 5. Verify/compile streamix-video-host.exe
+const videoHostExe = path.resolve(desktopRoot, "bin/streamix-video-host.exe");
+const videoHostCs = path.resolve(desktopRoot, "src/video-host.cs");
+if (!fs.existsSync(videoHostExe) && fs.existsSync(videoHostCs)) {
+  const { execSync } = await import("node:child_process");
+  console.log("[prepare-package] Compiling streamix-video-host.exe...");
+  execSync(`C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64 /target:exe /out:"${videoHostExe}" "${videoHostCs}"`, { stdio: "inherit" });
+}
+if (fs.existsSync(videoHostExe)) {
+  console.log(`[prepare-package] Verified streamix-video-host binary present at ${videoHostExe}`);
+}
+
 console.log("[prepare-package] Packaging preparation complete!");
