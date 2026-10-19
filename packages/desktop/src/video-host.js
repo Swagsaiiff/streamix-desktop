@@ -14,6 +14,7 @@ export class VideoHostManager {
     this.rl = null;
     this.currentHwnd = null;
     this.pendingResolvers = [];
+    this.onEvent = null;
   }
 
   locateBinary() {
@@ -44,8 +45,10 @@ export class VideoHostManager {
       if (fs.existsSync(csPath)) {
         try {
           fs.mkdirSync(path.dirname(hostExe), { recursive: true });
+          const safeHostExe = hostExe.replace(/\//g, "\\");
+          const safeCsPath = csPath.replace(/\//g, "\\");
           execSync(
-            `C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64 /target:exe /out:"${hostExe}" "${csPath}"`,
+            `C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64 /target:exe /out:"${safeHostExe}" "${safeCsPath}"`,
             { stdio: "ignore" }
           );
         } catch {}
@@ -67,6 +70,16 @@ export class VideoHostManager {
       if (!trimmed) return;
       try {
         const parsed = JSON.parse(trimmed);
+        if (parsed.event) {
+          if (typeof this.onEvent === "function") {
+            try {
+              this.onEvent(parsed.event, parsed);
+            } catch (evErr) {
+              console.error("[VideoHost] Error in onEvent listener:", evErr);
+            }
+          }
+          return;
+        }
         const resolver = this.pendingResolvers.shift();
         if (resolver) resolver(parsed);
       } catch (err) {
@@ -120,6 +133,11 @@ export class VideoHostManager {
     const w = Math.max(1, Math.round(bounds.width || 100));
     const h = Math.max(1, Math.round(bounds.height || 100));
     return await this.sendCommand(`BOUNDS ${x} ${y} ${w} ${h}`);
+  }
+
+  async sync() {
+    if (!this.currentHwnd) return;
+    return await this.sendCommand("SYNC");
   }
 
   async show() {

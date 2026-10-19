@@ -521,3 +521,39 @@ Live evidence for "Beast of War (2025)":
 
 1. Port the first permitted extractor path from `CineStreamExtractors.kt` (single host, validate a real media URL end-to-end), then flip `supportsStreamResolution`.
 2. Optional: per-endpoint search timeouts after collecting more latency data; browser-level UI QA.
+
+## Desktop native video-host black screen resolution
+
+### Confirmed Cause
+1. **Window Hierarchy & Compositor Occlusion:** In `video-host.cs`, when `parent != IntPtr.Zero`, the video surface was created as a standard `WS_CHILD` window under Electron's top-level HWND (`Chrome_WidgetWin_1`). In modern Chromium/Electron, DirectComposition surfaces render directly to the window's visual tree, compositing the web page over standard Win32 `WS_CHILD` siblings.
+2. **Opaque DOM Element:** In `packages/client/src/index.css`, `.player-desktop-canvas` had an opaque `background: #000;` with a center badge (`Native MPV Active`), completely covering the player viewport in Chromium's rendering surface.
+3. **Viewport Coordinates:** `WS_CHILD` window coordinates could not break out of Chromium's composition tree, whereas flip-model swapchains in modern Direct3D 11 (`gpu-next`) require a top-level or owned composition surface.
+
+### Fix Applied
+1. **Owned Popup Window Architecture (`packages/desktop/src/video-host.cs`):**
+   - Switched the native video surface window style to an owned popup: `WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS` with `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`.
+   - Used Win32 `ClientToScreen(ownerHwnd, ref pt)` to dynamically convert the React player viewport client bounds (`x, y, w, h`) to physical screen coordinates.
+   - Added a 30ms timer on the dedicated Win32 message loop thread to automatically re-query `ClientToScreen` and seamlessly track the Electron window during moves, drags, and resizes.
+   - Forwarded mouse events (`WM_LBUTTONDOWN`, `WM_LBUTTONDBLCLK`, `WM_MOUSEMOVE`) from the video surface to the main Electron process via stdout.
+2. **Host Management & Window Sync (`packages/desktop/src/video-host.js` & `packages/desktop/src/main.js`):**
+   - Added event listener support and `sync()` command in `video-host.js`.
+   - Hooked Electron window `move`, `resize`, `restore`, `show` events to automatically sync video host position.
+   - Forwarded video host mouse events to the renderer as `video-click`, `video-dblclick`, `video-mousemove`.
+3. **React Player Integration (`packages/client/src/lib/playbackAdapter.js`, `Player.jsx`, `index.css`):**
+   - Added event bridges for `videoclick`, `videodblclick`, `videomousemove`, mapping them to `togglePlay`, `toggleFullscreen`, and `bumpControls`.
+   - Removed the 200ms CSS transition on `.player-desktop-canvas` to eliminate resizing jitter.
+   - Suppressed the `Native MPV Active` DOM badge when playback is ready.
+
+### Verification Results
+- `npm run build` passed cleanly.
+- `npm --prefix packages/desktop run prepackage` passed cleanly.
+- Full end-to-end Electron render verification executed with real fixture video (`multi-audio.mkv`):
+  - MPV initialized with `gpu-next` and `d3d11va` hardware decoding.
+  - Native video surface captured via Win32 `PrintWindow` (92,021 bytes) confirmed rendering real video frames (solid blue test frame).
+  - Audio playback and real-time audio track switching (switched to Track 2) verified.
+  - `setBounds` full-screen / controls-hidden mode verified.
+- Automated desktop integration test (`STREAMIX_DESKTOP_TEST=1`) verified:
+  - Page title: STREAMIX
+  - App mounted: true
+  - Cards rendered: 261
+  - Bridge keys: `["isDesktop","platform","version","apiUrl","mpv"]`.

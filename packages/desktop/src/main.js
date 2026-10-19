@@ -59,6 +59,12 @@ mpv.onEvent = (type, data) => {
   }
 };
 
+videoHost.onEvent = (type, data) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("mpv:event", { type: "video-" + type, data });
+  }
+};
+
 // Register safe IPC handlers for MPV player control
 ipcMain.handle("mpv:start", async (_event, sourceUrl, options = {}) => {
   try {
@@ -222,12 +228,30 @@ async function createWindow() {
     }
   }
 
+  mainWindow.on("move", () => {
+    videoHost.sync().catch(() => {});
+  });
+
+  mainWindow.on("resize", () => {
+    videoHost.sync().catch(() => {});
+  });
+
   mainWindow.on("minimize", () => {
     videoHost.hide().catch(() => {});
   });
 
   mainWindow.on("restore", () => {
     videoHost.show().catch(() => {});
+    videoHost.sync().catch(() => {});
+  });
+
+  mainWindow.on("hide", () => {
+    videoHost.hide().catch(() => {});
+  });
+
+  mainWindow.on("show", () => {
+    videoHost.show().catch(() => {});
+    videoHost.sync().catch(() => {});
   });
 
   mainWindow.on("closed", () => {

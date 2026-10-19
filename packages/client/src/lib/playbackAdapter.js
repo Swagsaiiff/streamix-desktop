@@ -74,6 +74,15 @@ export function createDesktopMpvAdapter() {
       case "hwdec-active":
         emit("hwdecactive", data);
         break;
+      case "video-click":
+        emit("videoclick", data);
+        break;
+      case "video-dblclick":
+        emit("videodblclick", data);
+        break;
+      case "video-mousemove":
+        emit("videomousemove", data);
+        break;
       default:
         break;
     }

@@ -758,6 +758,19 @@ export default function Player({ item, onClose, onProgress }) {
     };
   }, [bumpControls]);
 
+  useEffect(() => {
+    if (!isDesktop || !mpvAdapterRef.current) return;
+    const adapter = mpvAdapterRef.current;
+    const unClick = adapter.on("videoclick", () => togglePlay());
+    const unDbl = adapter.on("videodblclick", () => toggleFullscreen());
+    const unMove = adapter.on("videomousemove", () => bumpControls());
+    return () => {
+      unClick?.();
+      unDbl?.();
+      unMove?.();
+    };
+  }, [isDesktop, phase, togglePlay, toggleFullscreen, bumpControls]);
+
   const lastBoundsRef = useRef(null);
   useEffect(() => {
     if (!isDesktop) return;
@@ -824,7 +837,7 @@ export default function Player({ item, onClose, onProgress }) {
 
       {isDesktop && (
         <div ref={canvasRef} className="player-desktop-canvas" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
-          <div className="player-desktop-badge">Native MPV Active</div>
+          {phase !== "ready" && <div className="player-desktop-badge">Native MPV Active</div>}
         </div>
       )}
 

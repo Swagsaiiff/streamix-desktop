@@ -29,7 +29,13 @@ namespace Streamix
         static extern IntPtr DefWindowProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
-        static extern IntPtr GetDesktopWindow();
+        static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         static extern bool GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
@@ -41,19 +47,35 @@ namespace Streamix
         static extern IntPtr DispatchMessage([In] ref MSG lpmsg);
 
         [DllImport("user32.dll")]
-        static extern void PostQuitMessage(int nExitCode);
-
-        [DllImport("user32.dll")]
         static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);
 
         [DllImport("user32.dll")]
         static extern bool EndPaint(IntPtr hWnd, [In] ref PAINTSTRUCT lpPaint);
+
+        [DllImport("user32.dll")]
+        static extern UIntPtr SetTimer(IntPtr hWnd, UIntPtr nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+
+        [DllImport("user32.dll")]
+        static extern bool KillTimer(IntPtr hWnd, UIntPtr uIDEvent);
 
         [DllImport("gdi32.dll")]
         static extern IntPtr GetStockObject(int fnObject);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
         static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32.dll")]
+        static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        static extern bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+        }
 
         delegate IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -104,10 +126,13 @@ namespace Streamix
             public int left, top, right, bottom;
         }
 
-        const uint WS_CHILD = 0x40000000;
+        const uint WS_POPUP = 0x80000000;
         const uint WS_VISIBLE = 0x10000000;
         const uint WS_CLIPCHILDREN = 0x02000000;
         const uint WS_CLIPSIBLINGS = 0x04000000;
+
+        const uint WS_EX_TOOLWINDOW = 0x00000080;
+        const uint WS_EX_NOACTIVATE = 0x08000000;
 
         const uint SWP_NOZORDER = 0x0004;
         const uint SWP_NOACTIVATE = 0x0010;
@@ -118,19 +143,14 @@ namespace Streamix
         const int SW_SHOW = 5;
         const int BLACK_BRUSH = 4;
 
-        const uint WM_ERASEBKGND = 0x0014;
-        const uint WM_PAINT = 0x000F;
         const uint WM_DESTROY = 0x0002;
+        const uint WM_PAINT = 0x000F;
+        const uint WM_ERASEBKGND = 0x0014;
+        const uint WM_TIMER = 0x0113;
 
-        static WndProc wndProcDelegate;
-        static IntPtr currentHwnd = IntPtr.Zero;
-        static uint uiThreadId = 0;
-
-        [DllImport("kernel32.dll")]
-        static extern uint GetCurrentThreadId();
-
-        [DllImport("user32.dll")]
-        static extern bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
+        const uint WM_MOUSEMOVE = 0x0200;
+        const uint WM_LBUTTONDOWN = 0x0201;
+        const uint WM_LBUTTONDBLCLK = 0x0203;
 
         const uint WM_USER = 0x0400;
         const uint WM_USER_CREATE = WM_USER + 1;
@@ -138,6 +158,20 @@ namespace Streamix
         const uint WM_USER_SHOW = WM_USER + 3;
         const uint WM_USER_HIDE = WM_USER + 4;
         const uint WM_USER_DESTROY = WM_USER + 5;
+        const uint WM_USER_SYNC = WM_USER + 6;
+
+        static WndProc wndProcDelegate;
+        static IntPtr currentHwnd = IntPtr.Zero;
+        static IntPtr ownerHwnd = IntPtr.Zero;
+        static uint uiThreadId = 0;
+
+        static int relX = 0;
+        static int relY = 0;
+        static int targetW = 800;
+        static int targetH = 600;
+        static int lastScreenX = -99999;
+        static int lastScreenY = -99999;
+        static long lastMouseMoveTime = 0;
 
         class CreateParams
         {
@@ -147,16 +181,46 @@ namespace Streamix
             public IntPtr Result = IntPtr.Zero;
         }
 
+        static void UpdateScreenPosition(bool force)
+        {
+            if (currentHwnd == IntPtr.Zero || ownerHwnd == IntPtr.Zero) return;
+            POINT pt = new POINT();
+            pt.X = relX;
+            pt.Y = relY;
+            if (!ClientToScreen(ownerHwnd, ref pt)) return;
+
+            if (force || pt.X != lastScreenX || pt.Y != lastScreenY)
+            {
+                lastScreenX = pt.X;
+                lastScreenY = pt.Y;
+                SetWindowPos(currentHwnd, IntPtr.Zero, pt.X, pt.Y, targetW, targetH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+
         static IntPtr CustomWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
         {
             switch (msg)
             {
                 case WM_ERASEBKGND:
-                    return new IntPtr(1); // handled
+                    return new IntPtr(1);
                 case WM_PAINT:
                     PAINTSTRUCT ps;
                     IntPtr hdc = BeginPaint(hWnd, out ps);
                     EndPaint(hWnd, ref ps);
+                    return IntPtr.Zero;
+                case WM_LBUTTONDOWN:
+                    Console.WriteLine("{\"event\":\"click\"}");
+                    return IntPtr.Zero;
+                case WM_LBUTTONDBLCLK:
+                    Console.WriteLine("{\"event\":\"dblclick\"}");
+                    return IntPtr.Zero;
+                case WM_MOUSEMOVE:
+                    long now = DateTime.UtcNow.Ticks / 10000;
+                    if (now - lastMouseMoveTime > 250)
+                    {
+                        lastMouseMoveTime = now;
+                        Console.WriteLine("{\"event\":\"mousemove\"}");
+                    }
                     return IntPtr.Zero;
                 case WM_DESTROY:
                     return IntPtr.Zero;
@@ -175,7 +239,7 @@ namespace Streamix
 
             WNDCLASSEX wc = new WNDCLASSEX();
             wc.cbSize = (uint)Marshal.SizeOf(typeof(WNDCLASSEX));
-            wc.style = 0x0002 | 0x0001; // CS_HREDRAW | CS_VREDRAW
+            wc.style = 0x0002 | 0x0001;
             wc.lpfnWndProc = wndProcDelegate;
             wc.cbClsExtra = 0;
             wc.cbWndExtra = 0;
@@ -195,42 +259,79 @@ namespace Streamix
             Thread windowThread = new Thread(() =>
             {
                 uiThreadId = GetCurrentThreadId();
+                SetTimer(IntPtr.Zero, UIntPtr.Zero, 30, IntPtr.Zero);
                 threadReady.Set();
 
                 MSG msg;
                 while (GetMessage(out msg, IntPtr.Zero, 0, 0))
                 {
-                    if (msg.message == WM_USER_CREATE && pendingCreate != null)
+                    if (msg.message == WM_TIMER)
+                    {
+                        UpdateScreenPosition(false);
+                    }
+                    else if (msg.message == WM_USER_CREATE && pendingCreate != null)
                     {
                         if (currentHwnd != IntPtr.Zero)
                         {
                             DestroyWindow(currentHwnd);
                             currentHwnd = IntPtr.Zero;
                         }
-                        IntPtr parent = pendingCreate.Parent;
-                        uint style = WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-                        if (parent != IntPtr.Zero)
+
+                        ownerHwnd = pendingCreate.Parent;
+                        relX = pendingCreate.X;
+                        relY = pendingCreate.Y;
+                        targetW = pendingCreate.W;
+                        targetH = pendingCreate.H;
+
+                        POINT pt = new POINT();
+                        pt.X = relX;
+                        pt.Y = relY;
+                        if (ownerHwnd != IntPtr.Zero)
                         {
-                            style |= WS_CHILD;
+                            ClientToScreen(ownerHwnd, ref pt);
                         }
-                        else
-                        {
-                            style |= 0x80000000; // WS_POPUP
-                        }
+                        lastScreenX = pt.X;
+                        lastScreenY = pt.Y;
+
+                        uint style = WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS;
+                        uint exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
                         currentHwnd = CreateWindowEx(
-                            0,
+                            exStyle,
                             "StreamixVideoSurfaceClass",
                             "StreamixVideoSurface",
                             style,
-                            pendingCreate.X, pendingCreate.Y, pendingCreate.W, pendingCreate.H,
-                            parent,
+                            pt.X, pt.Y, targetW, targetH,
+                            ownerHwnd,
                             IntPtr.Zero,
                             hInst,
                             IntPtr.Zero
                         );
                         pendingCreate.Result = currentHwnd;
                         pendingCreate.Ready.Set();
+                    }
+                    else if (msg.message == WM_USER_BOUNDS)
+                    {
+                        UpdateScreenPosition(true);
+                    }
+                    else if (msg.message == WM_USER_SYNC)
+                    {
+                        UpdateScreenPosition(true);
+                    }
+                    else if (msg.message == WM_USER_SHOW)
+                    {
+                        if (currentHwnd != IntPtr.Zero)
+                        {
+                            ShowWindow(currentHwnd, SW_SHOW);
+                            UpdateScreenPosition(true);
+                        }
+                    }
+                    else if (msg.message == WM_USER_HIDE)
+                    {
+                        if (currentHwnd != IntPtr.Zero)
+                        {
+                            ShowWindow(currentHwnd, SW_HIDE);
+                        }
                     }
                     else if (msg.message == WM_USER_DESTROY)
                     {
@@ -286,31 +387,27 @@ namespace Streamix
                     }
                     else if (cmd == "BOUNDS" && parts.Length >= 5)
                     {
-                        int x = int.Parse(parts[1]);
-                        int y = int.Parse(parts[2]);
-                        int w = int.Parse(parts[3]);
-                        int h = int.Parse(parts[4]);
+                        relX = int.Parse(parts[1]);
+                        relY = int.Parse(parts[2]);
+                        targetW = int.Parse(parts[3]);
+                        targetH = int.Parse(parts[4]);
 
-                        if (currentHwnd != IntPtr.Zero)
-                        {
-                            SetWindowPos(currentHwnd, IntPtr.Zero, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                        }
+                        PostThreadMessage(uiThreadId, WM_USER_BOUNDS, IntPtr.Zero, IntPtr.Zero);
+                        Console.WriteLine("{\"ok\":true}");
+                    }
+                    else if (cmd == "SYNC")
+                    {
+                        PostThreadMessage(uiThreadId, WM_USER_SYNC, IntPtr.Zero, IntPtr.Zero);
                         Console.WriteLine("{\"ok\":true}");
                     }
                     else if (cmd == "SHOW")
                     {
-                        if (currentHwnd != IntPtr.Zero)
-                        {
-                            ShowWindow(currentHwnd, SW_SHOW);
-                        }
+                        PostThreadMessage(uiThreadId, WM_USER_SHOW, IntPtr.Zero, IntPtr.Zero);
                         Console.WriteLine("{\"ok\":true}");
                     }
                     else if (cmd == "HIDE")
                     {
-                        if (currentHwnd != IntPtr.Zero)
-                        {
-                            ShowWindow(currentHwnd, SW_HIDE);
-                        }
+                        PostThreadMessage(uiThreadId, WM_USER_HIDE, IntPtr.Zero, IntPtr.Zero);
                         Console.WriteLine("{\"ok\":true}");
                     }
                     else if (cmd == "DESTROY")
