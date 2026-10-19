@@ -62,6 +62,7 @@ export class MpvManager {
       "--force-window=yes",
       "--osc=no",
       "--osd-level=0",
+      "--msg-level=all=warn",
       `--hwdec=${hwdecMode}`,
       `--volume=${Math.round((options.volume ?? 1) * 100)}`,
       "--cache-pause=no",
@@ -113,6 +114,7 @@ export class MpvManager {
     this.setupSocket();
 
     // Register property observers in parallel batch to eliminate sequential IPC roundtrips
+    // (Notice: core-idle omitted to prevent high-frequency event spam)
     await Promise.all([
       this.command("observe_property", 1, "time-pos"),
       this.command("observe_property", 2, "pause"),
@@ -123,8 +125,7 @@ export class MpvManager {
       this.command("observe_property", 7, "speed"),
       this.command("observe_property", 8, "volume"),
       this.command("observe_property", 9, "mute"),
-      this.command("observe_property", 10, "paused-for-cache"),
-      this.command("observe_property", 11, "core-idle")
+      this.command("observe_property", 10, "paused-for-cache")
     ]);
 
     // Load media
@@ -163,8 +164,9 @@ export class MpvManager {
         try {
           const parsed = JSON.parse(line);
           if (parsed.request_id && this.pending.has(parsed.request_id)) {
-            const { resolve, reject } = this.pending.get(parsed.request_id);
+            const { resolve, reject, timer } = this.pending.get(parsed.request_id);
             this.pending.delete(parsed.request_id);
+            if (timer) clearTimeout(timer);
             if (parsed.error && parsed.error !== "success") {
               reject(new Error(`MPV error (${parsed.error}) for req ${parsed.request_id}`));
             } else {
@@ -174,14 +176,29 @@ export class MpvManager {
             this.handleEvent(parsed);
           }
         } catch (e) {
-          console.error("[MpvManager] Error parsing IPC JSON line:", e);
+          console.error("[MpvManager] Error parsing IPC JSON line:", e.message);
         }
       }
     });
 
     this.socket.on("error", (err) => {
       console.error("[MpvManager] Socket error:", err.message);
+      this.rejectAllPending("Socket error: " + err.message);
     });
+
+    this.socket.on("close", () => {
+      this.rejectAllPending("Socket closed");
+    });
+  }
+
+  rejectAllPending(reason) {
+    for (const [id, entry] of this.pending) {
+      if (entry.timer) clearTimeout(entry.timer);
+      try {
+        entry.reject(new Error(reason || "MPV connection dropped"));
+      } catch {}
+    }
+    this.pending.clear();
   }
 
   handleEvent(eventObj) {
@@ -280,9 +297,17 @@ export class MpvManager {
     const id = this.reqId++;
     const payload = JSON.stringify({ command: args, request_id: id }) + "\n";
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          reject(new Error(`MPV command timed out after 5000ms: ${args[0]} (id=${id})`));
+        }
+      }, 5000);
+
+      this.pending.set(id, { resolve, reject, timer });
       this.socket.write(payload, "utf8", (err) => {
         if (err) {
+          clearTimeout(timer);
           this.pending.delete(id);
           reject(err);
         }
@@ -343,13 +368,13 @@ export class MpvManager {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+    this.rejectAllPending("MPV cleanup called");
     if (this.socket) {
       try {
         this.socket.destroy();
       } catch {}
       this.socket = null;
     }
-    this.pending.clear();
     this.buffer = "";
   }
 

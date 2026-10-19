@@ -652,3 +652,54 @@ Measurements collected on live streaming titles (e.g. *Inception* 2010):
   - `npm run build`: built in 331ms.
   - `STREAMIX_DESKTOP_TEST=1` Electron test: VERIFICATION_SUCCESS.
   - `npm run package:desktop`: generated Windows installer `STREAMIX Setup 1.0.4.exe` (129 MB) and mirror `setup.exe`.
+
+## Runtime Stability & Hang Prevention (COMPLETED)
+
+### Objective
+Investigate and resolve the issue where the desktop application hangs after running for some time during sustained playback or window interactions, applying professional-grade architectural hardening across the Win32 native video host, Electron IPC pipeline, MPV process manager, and React Player lifecycle.
+
+### Root Cause Analysis
+1. **Multi-threaded Stdout Interleaving & IPC Desync (`streamix-video-host.exe` & `video-host.js`)**:
+   - `video-host.cs` had two concurrent threads writing directly to standard output: Thread 1 (`Main`) writing command responses (`{"ok":true}`), and Thread 2 (`CustomWndProc`) writing user events (`{"event":"mousemove"}`).
+   - During playback, mouse movement over the video surface caused `Console.WriteLine` calls from Thread 2 to collide with `Main` thread command responses.
+   - Without a locking mechanism, characters interleaved on stdout (e.g. `{"event":"mous{"ok":true}emove"}`), causing `JSON.parse` syntax errors in `video-host.js`.
+   - `video-host.js` used a FIFO array (`pendingResolvers.shift()`) with no request correlation IDs or timeouts. When a line failed to parse, the resolver was never shifted; all subsequent commands received the wrong response, and in-flight promises leaked indefinitely.
+   - Any `await videoHost.setBounds()` or `sync()` called from `ipcMain.handle` in Electron stalled forever, blocking Electron's IPC queue and freezing renderer promises.
+2. **Win32 Timer & Thread Message Pump Overload (`video-host.cs`)**:
+   - `video-host.cs` initialized a 30ms timer on the thread message queue that was never killed on window destruction.
+   - Electron's `move` and `resize` events called `videoHost.sync()` unthrottled on every single pixel movement, flooding stdin and thread messages.
+3. **High-Frequency MPV Property Observation Spam (`mpv-manager.js`)**:
+   - `mpv-manager.js` was observing `core-idle`. During network stream demuxing, `core-idle` toggles dozens of times per second as network packets arrive.
+   - Every toggle triggered IPC events forwarded across Electron to renderer for a property completely unused by the client, causing memory churn and eventual event loop backlog.
+   - MPV had no `--msg-level` restriction, generating high volumes of stderr logs during extended playback.
+   - MPV commands had no timeouts and `cleanup()` didn't reject pending commands.
+4. **React `ResizeObserver` Dependency Churn (`Player.jsx`)**:
+   - `Player.jsx` had `controlsVisible` in the dependency array of the `ResizeObserver` effect `[isDesktop, controlsVisible, fullscreen, phase]`.
+   - Every 3.5 seconds as controls auto-toggled, the entire `ResizeObserver` was torn down and reconstructed, dispatching redundant bounds update IPCs.
+   - `bumpControls` and player event listeners re-subscribed on every play/pause transition due to changing callback identity.
+5. **Chromium Background Timer & IPC Throttling (`main.js`)**:
+   - Default `backgroundThrottling: true` caused Chromium to throttle timers, requestAnimationFrame, and IPC message processing down to 1Hz or pause them when the window lost focus or was partially occluded.
+
+### Solutions Implemented
+1. **Thread-Safe Stdout & Request Correlation (`video-host.cs`, `video-host.js`)**:
+   - Added `lock (consoleLock)` around all `Console.WriteLine` calls in `video-host.cs` to eliminate multi-threaded stdout line interleaving.
+   - Introduced request sequence IDs (`id`) on every command and response, replacing the fragile FIFO queue with a correlated Map (`this.pending.set(id, ...)`).
+   - Added a 2000ms safety timeout to `sendCommand` so dropped commands reject cleanly rather than hanging the main process.
+   - Added deduplication cache and in-flight coalescing to `setBounds` so identical bounds checks are no-ops.
+   - Managed Win32 timer lifecycle: timer starts on window creation and is stopped/killed on window destroy (`KillTimer`).
+2. **MPV Manager Hardening (`mpv-manager.js`)**:
+   - Removed `core-idle` observer to eliminate high-frequency event spam.
+   - Added `--msg-level=all=warn` to suppress noisy network chunk and demuxer debug output on stderr.
+   - Added 5000ms command timeout and `rejectAllPending` on socket close, error, and cleanup.
+3. **Player Lifecycle Stabilization (`Player.jsx`)**:
+   - Removed `controlsVisible` from `ResizeObserver` effect dependencies so the observer persists across control visibility toggles.
+   - Stabilized `bumpControls` and event listeners using `playingRef` to eliminate hook and subscription churn.
+4. **Desktop Window Configuration & IPC Throttling (`main.js`)**:
+   - Added `backgroundThrottling: false` to `webPreferences` so playback and IPC are never throttled by the OS or window occlusion.
+   - Throttled window `move` and `resize` synchronization to at most 1 call per 50ms.
+
+### Verification Performed
+- **Client Build**: `npm run build` -> clean build in 245ms.
+- **Server Tests**: `npm test --workspace=packages/server` -> 104/104 tests passing.
+- **Electron Integration Test**: `STREAMIX_DESKTOP_TEST=1 npx electron packages/desktop/src/main.js` -> verified app mount, 257 cards, bridge APIs, clean exit without errors.
+- **Packaging & Version Bump**: `npm run package:desktop` -> built `STREAMIX Setup 1.0.5.exe` (129 MB) and updated mirror `packages/desktop/dist/setup.exe`.

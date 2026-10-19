@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -160,17 +160,29 @@ namespace Streamix
         const uint WM_USER_DESTROY = WM_USER + 5;
         const uint WM_USER_SYNC = WM_USER + 6;
 
+        static readonly object consoleLock = new object();
+        static void SendResponse(string json)
+        {
+            lock (consoleLock)
+            {
+                Console.WriteLine(json);
+            }
+        }
+
         static WndProc wndProcDelegate;
         static IntPtr currentHwnd = IntPtr.Zero;
         static IntPtr ownerHwnd = IntPtr.Zero;
         static uint uiThreadId = 0;
+        static UIntPtr activeTimerId = UIntPtr.Zero;
 
-        static int relX = 0;
-        static int relY = 0;
-        static int targetW = 800;
-        static int targetH = 600;
+        static volatile int relX = 0;
+        static volatile int relY = 0;
+        static volatile int targetW = 800;
+        static volatile int targetH = 600;
         static int lastScreenX = -99999;
         static int lastScreenY = -99999;
+        static int lastTargetW = -99999;
+        static int lastTargetH = -99999;
         static long lastMouseMoveTime = 0;
 
         class CreateParams
@@ -181,18 +193,39 @@ namespace Streamix
             public IntPtr Result = IntPtr.Zero;
         }
 
+        static void EnsureTimer()
+        {
+            if (activeTimerId == UIntPtr.Zero)
+            {
+                activeTimerId = SetTimer(IntPtr.Zero, UIntPtr.Zero, 30, IntPtr.Zero);
+            }
+        }
+
+        static void StopTimer()
+        {
+            if (activeTimerId != UIntPtr.Zero)
+            {
+                KillTimer(IntPtr.Zero, activeTimerId);
+                activeTimerId = UIntPtr.Zero;
+            }
+        }
+
         static void UpdateScreenPosition(bool force)
         {
             if (currentHwnd == IntPtr.Zero || ownerHwnd == IntPtr.Zero) return;
+            if (!IsWindow(currentHwnd) || !IsWindow(ownerHwnd)) return;
+
             POINT pt = new POINT();
             pt.X = relX;
             pt.Y = relY;
             if (!ClientToScreen(ownerHwnd, ref pt)) return;
 
-            if (force || pt.X != lastScreenX || pt.Y != lastScreenY)
+            if (force || pt.X != lastScreenX || pt.Y != lastScreenY || targetW != lastTargetW || targetH != lastTargetH)
             {
                 lastScreenX = pt.X;
                 lastScreenY = pt.Y;
+                lastTargetW = targetW;
+                lastTargetH = targetH;
                 SetWindowPos(currentHwnd, IntPtr.Zero, pt.X, pt.Y, targetW, targetH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
         }
@@ -209,17 +242,17 @@ namespace Streamix
                     EndPaint(hWnd, ref ps);
                     return IntPtr.Zero;
                 case WM_LBUTTONDOWN:
-                    Console.WriteLine("{\"event\":\"click\"}");
+                    SendResponse("{\"event\":\"click\"}");
                     return IntPtr.Zero;
                 case WM_LBUTTONDBLCLK:
-                    Console.WriteLine("{\"event\":\"dblclick\"}");
+                    SendResponse("{\"event\":\"dblclick\"}");
                     return IntPtr.Zero;
                 case WM_MOUSEMOVE:
                     long now = DateTime.UtcNow.Ticks / 10000;
                     if (now - lastMouseMoveTime > 250)
                     {
                         lastMouseMoveTime = now;
-                        Console.WriteLine("{\"event\":\"mousemove\"}");
+                        SendResponse("{\"event\":\"mousemove\"}");
                     }
                     return IntPtr.Zero;
                 case WM_DESTROY:
@@ -259,7 +292,6 @@ namespace Streamix
             Thread windowThread = new Thread(() =>
             {
                 uiThreadId = GetCurrentThreadId();
-                SetTimer(IntPtr.Zero, UIntPtr.Zero, 30, IntPtr.Zero);
                 threadReady.Set();
 
                 MSG msg;
@@ -286,12 +318,14 @@ namespace Streamix
                         POINT pt = new POINT();
                         pt.X = relX;
                         pt.Y = relY;
-                        if (ownerHwnd != IntPtr.Zero)
+                        if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
                         {
                             ClientToScreen(ownerHwnd, ref pt);
                         }
                         lastScreenX = pt.X;
                         lastScreenY = pt.Y;
+                        lastTargetW = targetW;
+                        lastTargetH = targetH;
 
                         uint style = WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS;
                         uint exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
@@ -308,6 +342,7 @@ namespace Streamix
                             IntPtr.Zero
                         );
                         pendingCreate.Result = currentHwnd;
+                        EnsureTimer();
                         pendingCreate.Ready.Set();
                     }
                     else if (msg.message == WM_USER_BOUNDS)
@@ -323,6 +358,7 @@ namespace Streamix
                         if (currentHwnd != IntPtr.Zero)
                         {
                             ShowWindow(currentHwnd, SW_SHOW);
+                            EnsureTimer();
                             UpdateScreenPosition(true);
                         }
                     }
@@ -331,15 +367,18 @@ namespace Streamix
                         if (currentHwnd != IntPtr.Zero)
                         {
                             ShowWindow(currentHwnd, SW_HIDE);
+                            StopTimer();
                         }
                     }
                     else if (msg.message == WM_USER_DESTROY)
                     {
+                        StopTimer();
                         if (currentHwnd != IntPtr.Zero)
                         {
                             DestroyWindow(currentHwnd);
                             currentHwnd = IntPtr.Zero;
                         }
+                        ownerHwnd = IntPtr.Zero;
                     }
                     else
                     {
@@ -357,6 +396,7 @@ namespace Streamix
             string line;
             while ((line = Console.ReadLine()) != null)
             {
+                long reqId = 0;
                 try
                 {
                     line = line.Trim();
@@ -364,66 +404,95 @@ namespace Streamix
                     string[] parts = line.Split(' ');
                     string cmd = parts[0].ToUpperInvariant();
 
-                    if (cmd == "CREATE" && parts.Length >= 6)
+                    long parsedId;
+                    if (parts.Length > 1 && long.TryParse(parts[1], out parsedId))
                     {
-                        long parentVal = long.Parse(parts[1]);
-                        int x = int.Parse(parts[2]);
-                        int y = int.Parse(parts[3]);
-                        int w = int.Parse(parts[4]);
-                        int h = int.Parse(parts[5]);
-
-                        pendingCreate = new CreateParams
-                        {
-                            Parent = new IntPtr(parentVal),
-                            X = x,
-                            Y = y,
-                            W = w,
-                            H = h
-                        };
-                        PostThreadMessage(uiThreadId, WM_USER_CREATE, IntPtr.Zero, IntPtr.Zero);
-                        pendingCreate.Ready.WaitOne(3000);
-
-                        Console.WriteLine("{\"ok\":true,\"hwnd\":" + pendingCreate.Result.ToInt64() + "}");
+                        reqId = parsedId;
                     }
-                    else if (cmd == "BOUNDS" && parts.Length >= 5)
-                    {
-                        relX = int.Parse(parts[1]);
-                        relY = int.Parse(parts[2]);
-                        targetW = int.Parse(parts[3]);
-                        targetH = int.Parse(parts[4]);
 
-                        PostThreadMessage(uiThreadId, WM_USER_BOUNDS, IntPtr.Zero, IntPtr.Zero);
-                        Console.WriteLine("{\"ok\":true}");
+                    if (cmd == "CREATE")
+                    {
+                        int offset = reqId > 0 ? 2 : 1;
+                        if (parts.Length >= offset + 5)
+                        {
+                            long parentVal = long.Parse(parts[offset]);
+                            int x = int.Parse(parts[offset + 1]);
+                            int y = int.Parse(parts[offset + 2]);
+                            int w = int.Parse(parts[offset + 3]);
+                            int h = int.Parse(parts[offset + 4]);
+
+                            pendingCreate = new CreateParams
+                            {
+                                Parent = new IntPtr(parentVal),
+                                X = x,
+                                Y = y,
+                                W = w,
+                                H = h
+                            };
+                            PostThreadMessage(uiThreadId, WM_USER_CREATE, IntPtr.Zero, IntPtr.Zero);
+                            pendingCreate.Ready.WaitOne(3000);
+
+                            SendResponse("{\"ok\":true,\"id\":" + reqId + ",\"hwnd\":" + pendingCreate.Result.ToInt64() + "}");
+                        }
+                        else
+                        {
+                            SendResponse("{\"ok\":false,\"id\":" + reqId + ",\"error\":\"invalid_args\"}");
+                        }
+                    }
+                    else if (cmd == "BOUNDS")
+                    {
+                        int offset = reqId > 0 ? 2 : 1;
+                        if (parts.Length >= offset + 4)
+                        {
+                            relX = int.Parse(parts[offset]);
+                            relY = int.Parse(parts[offset + 1]);
+                            targetW = int.Parse(parts[offset + 2]);
+                            targetH = int.Parse(parts[offset + 3]);
+
+                            PostThreadMessage(uiThreadId, WM_USER_BOUNDS, IntPtr.Zero, IntPtr.Zero);
+                            SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
+                        }
+                        else
+                        {
+                            SendResponse("{\"ok\":false,\"id\":" + reqId + ",\"error\":\"invalid_args\"}");
+                        }
                     }
                     else if (cmd == "SYNC")
                     {
                         PostThreadMessage(uiThreadId, WM_USER_SYNC, IntPtr.Zero, IntPtr.Zero);
-                        Console.WriteLine("{\"ok\":true}");
+                        SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                     }
                     else if (cmd == "SHOW")
                     {
                         PostThreadMessage(uiThreadId, WM_USER_SHOW, IntPtr.Zero, IntPtr.Zero);
-                        Console.WriteLine("{\"ok\":true}");
+                        SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                     }
                     else if (cmd == "HIDE")
                     {
                         PostThreadMessage(uiThreadId, WM_USER_HIDE, IntPtr.Zero, IntPtr.Zero);
-                        Console.WriteLine("{\"ok\":true}");
+                        SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                     }
                     else if (cmd == "DESTROY")
                     {
                         PostThreadMessage(uiThreadId, WM_USER_DESTROY, IntPtr.Zero, IntPtr.Zero);
                         currentHwnd = IntPtr.Zero;
-                        Console.WriteLine("{\"ok\":true}");
+                        ownerHwnd = IntPtr.Zero;
+                        SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                     }
                     else if (cmd == "QUIT")
                     {
+                        SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                         break;
+                    }
+                    else
+                    {
+                        SendResponse("{\"ok\":false,\"id\":" + reqId + ",\"error\":\"unknown_command\"}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("{\"ok\":false,\"error\":\"" + ex.Message.Replace("\"", "'") + "\"}");
+                    string safeErr = ex.Message.Replace("\"", "'").Replace("\r", " ").Replace("\n", " ");
+                    SendResponse("{\"ok\":false,\"id\":" + reqId + ",\"error\":\"" + safeErr + "\"}");
                 }
             }
 

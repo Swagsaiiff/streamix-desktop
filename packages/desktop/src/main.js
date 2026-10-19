@@ -191,6 +191,7 @@ async function createWindow() {
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
       devTools: process.env.NODE_ENV !== "production"
     }
   });
@@ -314,13 +315,18 @@ async function createWindow() {
     }
   }
 
-  mainWindow.on("move", () => {
-    videoHost.sync().catch(() => {});
-  });
+  let syncScheduled = false;
+  const throttledSync = () => {
+    if (syncScheduled) return;
+    syncScheduled = true;
+    setTimeout(() => {
+      syncScheduled = false;
+      videoHost.sync().catch(() => {});
+    }, 50);
+  };
 
-  mainWindow.on("resize", () => {
-    videoHost.sync().catch(() => {});
-  });
+  mainWindow.on("move", throttledSync);
+  mainWindow.on("resize", throttledSync);
 
   mainWindow.on("minimize", () => {
     videoHost.hide().catch(() => {});
@@ -385,3 +391,4 @@ app.on("window-all-closed", () => {
   localBackend.stop();
   app.quit();
 });
+

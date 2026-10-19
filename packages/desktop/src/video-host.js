@@ -13,8 +13,12 @@ export class VideoHostManager {
     this.proc = null;
     this.rl = null;
     this.currentHwnd = null;
-    this.pendingResolvers = [];
+    this.seq = 0;
+    this.pending = new Map();
     this.onEvent = null;
+    this.lastBounds = null;
+    this.pendingBounds = null;
+    this.inFlightBounds = false;
   }
 
   locateBinary() {
@@ -80,10 +84,26 @@ export class VideoHostManager {
           }
           return;
         }
-        const resolver = this.pendingResolvers.shift();
-        if (resolver) resolver(parsed);
+
+        const id = Number(parsed.id);
+        if (id && this.pending.has(id)) {
+          const entry = this.pending.get(id);
+          this.pending.delete(id);
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.resolve(parsed);
+          return;
+        }
+
+        // Fallback for un-indexed responses
+        const firstKey = this.pending.keys().next().value;
+        if (firstKey !== undefined) {
+          const entry = this.pending.get(firstKey);
+          this.pending.delete(firstKey);
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.resolve(parsed);
+        }
       } catch (err) {
-        console.error("[VideoHost] Failed to parse output:", trimmed, err);
+        console.error("[VideoHost] Failed to parse output line:", trimmed, err.message);
       }
     });
 
@@ -94,18 +114,44 @@ export class VideoHostManager {
     this.proc.on("exit", (code, signal) => {
       console.log(`[VideoHost exit] code=${code} signal=${signal}`);
       this.currentHwnd = null;
-      while (this.pendingResolvers.length > 0) {
-        const res = this.pendingResolvers.shift();
-        res({ ok: false, error: "Process exited" });
+      this.lastBounds = null;
+      for (const [id, entry] of this.pending) {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.resolve({ ok: false, error: "Process exited" });
       }
+      this.pending.clear();
     });
   }
 
-  sendCommand(cmd) {
+  sendCommand(cmdName, ...args) {
     this.ensureProcess();
+    const id = ++this.seq;
+    const commandPayload = `${cmdName} ${id} ${args.join(" ")}`.trim();
+
     return new Promise((resolve) => {
-      this.pendingResolvers.push(resolve);
-      this.proc.stdin.write(cmd + "\n");
+      const timer = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id);
+          console.warn(`[VideoHost] Command timed out after 2000ms: ${cmdName} (id=${id})`);
+          resolve({ ok: false, error: "Command timeout" });
+        }
+      }, 2000);
+
+      this.pending.set(id, { resolve, timer });
+
+      try {
+        this.proc.stdin.write(commandPayload + "\n", (err) => {
+          if (err) {
+            clearTimeout(timer);
+            this.pending.delete(id);
+            resolve({ ok: false, error: err.message });
+          }
+        });
+      } catch (writeErr) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        resolve({ ok: false, error: writeErr.message });
+      }
     });
   }
 
@@ -118,39 +164,71 @@ export class VideoHostManager {
     const w = Math.max(1, Math.round(bounds.width || 800));
     const h = Math.max(1, Math.round(bounds.height || 600));
 
-    const res = await this.sendCommand(`CREATE ${parentHwnd} ${x} ${y} ${w} ${h}`);
+    const res = await this.sendCommand("CREATE", parentHwnd, x, y, w, h);
     if (res?.ok && res.hwnd) {
       this.currentHwnd = res.hwnd;
+      this.lastBounds = { x, y, width: w, height: h };
       return res.hwnd;
     }
     throw new Error(res?.error || "Failed to create video host window");
   }
 
   async setBounds(bounds) {
-    if (!this.currentHwnd) return;
+    if (!this.currentHwnd || !bounds) return { ok: true };
     const x = Math.max(0, Math.round(bounds.x || 0));
     const y = Math.max(0, Math.round(bounds.y || 0));
     const w = Math.max(1, Math.round(bounds.width || 100));
     const h = Math.max(1, Math.round(bounds.height || 100));
-    return await this.sendCommand(`BOUNDS ${x} ${y} ${w} ${h}`);
+
+    if (
+      this.lastBounds &&
+      this.lastBounds.x === x &&
+      this.lastBounds.y === y &&
+      this.lastBounds.width === w &&
+      this.lastBounds.height === h
+    ) {
+      return { ok: true };
+    }
+
+    this.lastBounds = { x, y, width: w, height: h };
+
+    if (this.inFlightBounds) {
+      this.pendingBounds = { x, y, width: w, height: h };
+      return { ok: true };
+    }
+
+    this.inFlightBounds = true;
+    try {
+      const res = await this.sendCommand("BOUNDS", x, y, w, h);
+      return res;
+    } finally {
+      this.inFlightBounds = false;
+      if (this.pendingBounds && this.currentHwnd) {
+        const next = this.pendingBounds;
+        this.pendingBounds = null;
+        this.setBounds(next).catch(() => {});
+      }
+    }
   }
 
   async sync() {
-    if (!this.currentHwnd) return;
+    if (!this.currentHwnd) return { ok: true };
     return await this.sendCommand("SYNC");
   }
 
   async show() {
-    if (!this.currentHwnd) return;
+    if (!this.currentHwnd) return { ok: true };
     return await this.sendCommand("SHOW");
   }
 
   async hide() {
-    if (!this.currentHwnd) return;
+    if (!this.currentHwnd) return { ok: true };
     return await this.sendCommand("HIDE");
   }
 
   async destroy() {
+    this.lastBounds = null;
+    this.pendingBounds = null;
     if (this.currentHwnd) {
       try {
         await this.sendCommand("DESTROY");
@@ -163,7 +241,7 @@ export class VideoHostManager {
     await this.destroy();
     if (this.proc) {
       try {
-        this.proc.stdin.write("QUIT\n");
+        this.proc.stdin.write("QUIT 0\n");
       } catch {}
       try {
         this.proc.kill();

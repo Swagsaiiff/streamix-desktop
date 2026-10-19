@@ -122,13 +122,18 @@ export default function Player({ item, onClose, onProgress }) {
     currentRef.current = current;
   }, [current]);
 
+  const playingRef = useRef(playing);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+
   const bumpControls = useCallback(() => {
     setControlsVisible(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      if (playing) setControlsVisible(false);
+      if (playingRef.current) setControlsVisible(false);
     }, HIDE_DELAY_MS);
-  }, [playing]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -809,7 +814,7 @@ export default function Player({ item, onClose, onProgress }) {
       observer.disconnect();
       window.removeEventListener("resize", updateBounds);
     };
-  }, [isDesktop, controlsVisible, fullscreen, phase]);
+  }, [isDesktop, fullscreen, phase]);
 
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const bufferedPct = duration > 0 ? Math.min(100, (buffered / duration) * 100) : 0;
