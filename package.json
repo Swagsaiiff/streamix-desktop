@@ -13,6 +13,8 @@
     "dev": "concurrently --kill-others -n server,client -c blue,magenta \"npm run dev --workspace=packages/server\" \"npm run dev --workspace=packages/client\"",
     "dev:server": "npm run dev --workspace=packages/server",
     "dev:client": "npm run dev --workspace=packages/client",
+    "dev:desktop": "electron packages/desktop",
+    "dev:electron": "concurrently --kill-others -n server,client,desktop -c blue,magenta,green \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:desktop\"",
     "build": "npm run build --workspace=packages/client",
     "test": "npm run test --workspace=packages/server && node --test \"packages/client/src/lib/*.test.js\"",
     "test:client": "node --test \"packages/client/src/lib/*.test.js\"",
@@ -20,7 +22,8 @@
     "health": "node scripts/healthcheck.mjs"
   },
   "devDependencies": {
-    "concurrently": "^10.0.6"
+    "concurrently": "^10.0.6",
+    "electron": "^44.9.0"
   },
   "description": "",
   "main": "index.js",
