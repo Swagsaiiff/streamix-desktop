@@ -735,3 +735,56 @@ Fix the issue where STREAMIX Desktop player controls fail to hide automatically 
 - **Server Tests**: `npm test --workspace=packages/server` -> 104/104 tests passed.
 - **Electron Verification**: `STREAMIX_DESKTOP_TEST=1 npx electron packages/desktop/src/main.js` -> verified mount, 257 cards, bridge APIs, and clean exit.
 - **Packaging & Version Bump**: `npm run package:desktop` -> automatically incremented version to **1.0.6**, generated `STREAMIX Setup 1.0.6.exe` (129 MB), and updated mirror `setup.exe`.
+
+
+## Player Exit Detail Section Freeze Fix & Full GitHub Releases Archive (COMPLETED)
+
+### Objective
+1. Resolve the issue where returning/clicking Back from video playback to the detail modal causes the application to freeze/become unclickable.
+2. Build and publish all historical and current setup installer executables (`setup.exe` / `STREAMIX Setup <version>.exe`) across GitHub Releases so users can access every version setup file (`v1.0.0` through `v1.0.7`).
+
+### Root Cause of Detail Section Freeze
+1. **Thread Race in Native Window Destruction (`video-host.cs`)**:
+   - In `video-host.cs` command loop, handling `cmd == "DESTROY"` immediately set `currentHwnd = IntPtr.Zero;` and `ownerHwnd = IntPtr.Zero;` on the `Main` thread before `windowThread` could process the posted `WM_USER_DESTROY` message.
+   - When `windowThread` received `WM_USER_DESTROY`, it checked `if (currentHwnd != IntPtr.Zero)`, which evaluated to false because `Main` had already cleared it.
+   - As a result, `DestroyWindow(currentHwnd)` was skipped. The native Win32 window (`WS_POPUP`, owned by Electron) remained alive, visible/transparent, and floating in front of the Electron window.
+2. **Mouse Event Interception over Detail Section**:
+   - When the user navigated back from `Player` to `DetailModal`, all mouse clicks hit the orphaned native Win32 window.
+   - The native window's `CustomWndProc` swallowed `WM_LBUTTONDOWN` and returned `IntPtr.Zero`, preventing clicks from ever reaching Electron's DOM. This made the detail modal completely unresponsive/stuck.
+
+### Solutions Implemented
+1. **Thread-Safe Synchronous Window Destruction (`video-host.cs`)**:
+   - Introduced `static ManualResetEvent destroyReady = new ManualResetEvent(false);`
+   - In `WM_USER_DESTROY` on `windowThread`:
+     - Calls `ShowWindow(currentHwnd, SW_HIDE)` immediately so the window stops intercepting input instantly.
+     - Calls `DestroyWindow(currentHwnd)` and resets `currentHwnd = IntPtr.Zero;`.
+     - Signals `destroyReady.Set()`.
+   - In `cmd == "DESTROY"` on `Main` thread:
+     - Posts `WM_USER_DESTROY` to `windowThread`.
+     - Waits synchronously on `destroyReady.WaitOne(2000)` before returning success to Electron, ensuring the window is completely gone before navigation renders.
+2. **Immediate Pre-Teardown & Hide (`video-host.js`)**:
+   - Updated `destroy()` in `video-host.js` to issue `HIDE` before `DESTROY` for guaranteed immediate occlusion removal.
+3. **Dedicated `handleBack` Teardown (`Player.jsx`)**:
+   - Added `handleBack` in `Player.jsx` to synchronously trigger `mpvAdapterRef.current?.destroy()` and clear the reference before calling `onClose()`.
+   - Wired `handleBack` to the player back button, error back button, and Escape key listener.
+4. **All Versions Built & Published to GitHub Releases**:
+   - Auto-incremented desktop release to **v1.0.7**.
+   - Built standalone NSIS installer executables for all versions (`STREAMIX Setup 1.0.1.exe` through `STREAMIX Setup 1.0.7.exe`).
+   - Tagged all version commits and published individual releases to GitHub (`Swagsaiiff/streamix-desktop`) with full notes and setup executable assets:
+     - `v1.0.0`: `STREAMIX.Setup.1.0.0.exe`
+     - `v1.0.1`: `STREAMIX.Setup.1.0.1.exe`
+     - `v1.0.2`: `STREAMIX.Setup.1.0.2.exe`
+     - `v1.0.3`: `STREAMIX.Setup.1.0.3.exe`
+     - `v1.0.4`: `STREAMIX.Setup.1.0.4.exe`
+     - `v1.0.5`: `STREAMIX.Setup.1.0.5.exe`
+     - `v1.0.6`: `STREAMIX.Setup.1.0.6.exe`
+     - `v1.0.7`: `STREAMIX.Setup.1.0.7.exe`
+
+### Verification Performed
+- **C# Compilation**: Recompiled `packages/desktop/bin/streamix-video-host.exe` with C# 5 compiler (`csc.exe`) -> exit code 0.
+- **Client Build**: `npm run build` -> Vite production bundle built in 246ms.
+- **Unit & Integration Test Suite**: `npm test` -> 138/138 tests passing (104 server tests + 34 client tests).
+- **Electron Smoke Test**: `cmd /c "set STREAMIX_DESKTOP_TEST=1&& npx electron packages/desktop/src/main.js"` -> `VERIFICATION_SUCCESS` (app mounted, 257 catalog cards rendered, bridge APIs verified).
+- **Video Host Lifecycle Verification**: Executed automated verification testing `CREATE`, `BOUNDS`, `DESTROY`, and process stop -> verified `currentHwnd: null` after destroy and clean process termination.
+- **Installer Build**: `npm run package:desktop` -> built `STREAMIX Setup 1.0.7.exe` (129 MB) and updated mirror `setup.exe`.
+- **GitHub Releases Asset Verification**: Checked assets for all tags via `gh release view` -> confirmed 123 MB setup installer attached to every release from `v1.0.0` to `v1.0.7`.
