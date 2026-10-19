@@ -123,6 +123,9 @@ export default function Player({ item, onClose, onProgress }) {
   }, [current]);
 
   const playingRef = useRef(playing);
+  const lastHideTimeRef = useRef(0);
+  const lastMousePosRef = useRef({ x: -1, y: -1 });
+
   useEffect(() => {
     playingRef.current = playing;
   }, [playing]);
@@ -131,9 +134,23 @@ export default function Player({ item, onClose, onProgress }) {
     setControlsVisible(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      if (playingRef.current) setControlsVisible(false);
+      if (playingRef.current) {
+        lastHideTimeRef.current = Date.now();
+        setControlsVisible(false);
+      }
     }, HIDE_DELAY_MS);
   }, []);
+
+  const handleMouseMove = useCallback((e) => {
+    if (Date.now() - lastHideTimeRef.current < 400) return;
+    const x = e.screenX ?? e.clientX;
+    const y = e.screenY ?? e.clientY;
+    const dx = Math.abs(x - lastMousePosRef.current.x);
+    const dy = Math.abs(y - lastMousePosRef.current.y);
+    if (dx < 4 && dy < 4) return;
+    lastMousePosRef.current = { x, y };
+    bumpControls();
+  }, [bumpControls]);
 
   useEffect(() => {
     let cancelled = false;
@@ -773,7 +790,7 @@ export default function Player({ item, onClose, onProgress }) {
     const adapter = mpvAdapterRef.current;
     const unClick = adapter.on("videoclick", () => togglePlay());
     const unDbl = adapter.on("videodblclick", () => toggleFullscreen());
-    const unMove = adapter.on("videomousemove", () => bumpControls());
+    const unMove = adapter.on("videomousemove", () => { if (Date.now() - lastHideTimeRef.current < 400) return; bumpControls(); });
     return () => {
       unClick?.();
       unDbl?.();
@@ -838,7 +855,7 @@ export default function Player({ item, onClose, onProgress }) {
       role="dialog"
       aria-modal="true"
       aria-label={`Playing ${displayTitle}`}
-      onMouseMove={bumpControls}
+      onMouseMove={handleMouseMove}
       onTouchStart={bumpControls}
     >
       {!isDesktop && (

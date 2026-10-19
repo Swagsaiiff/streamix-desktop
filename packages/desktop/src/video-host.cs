@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -30,6 +30,9 @@ namespace Streamix
 
         [DllImport("user32.dll")]
         static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        static extern bool GetCursorPos(out POINT lpPoint);
 
         [DllImport("user32.dll")]
         static extern bool IsWindow(IntPtr hWnd);
@@ -184,6 +187,8 @@ namespace Streamix
         static int lastTargetW = -99999;
         static int lastTargetH = -99999;
         static long lastMouseMoveTime = 0;
+        static int lastGlobalMouseX = -99999;
+        static int lastGlobalMouseY = -99999;
 
         class CreateParams
         {
@@ -248,11 +253,22 @@ namespace Streamix
                     SendResponse("{\"event\":\"dblclick\"}");
                     return IntPtr.Zero;
                 case WM_MOUSEMOVE:
-                    long now = DateTime.UtcNow.Ticks / 10000;
-                    if (now - lastMouseMoveTime > 250)
+                    POINT curPt;
+                    if (GetCursorPos(out curPt))
                     {
-                        lastMouseMoveTime = now;
-                        SendResponse("{\"event\":\"mousemove\"}");
+                        int dx = Math.Abs(curPt.X - lastGlobalMouseX);
+                        int dy = Math.Abs(curPt.Y - lastGlobalMouseY);
+                        if (dx >= 4 || dy >= 4)
+                        {
+                            lastGlobalMouseX = curPt.X;
+                            lastGlobalMouseY = curPt.Y;
+                            long now = DateTime.UtcNow.Ticks / 10000;
+                            if (now - lastMouseMoveTime > 250)
+                            {
+                                lastMouseMoveTime = now;
+                                SendResponse("{\"event\":\"mousemove\"}");
+                            }
+                        }
                     }
                     return IntPtr.Zero;
                 case WM_DESTROY:

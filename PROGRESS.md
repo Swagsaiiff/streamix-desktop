@@ -703,3 +703,35 @@ Investigate and resolve the issue where the desktop application hangs after runn
 - **Server Tests**: `npm test --workspace=packages/server` -> 104/104 tests passing.
 - **Electron Integration Test**: `STREAMIX_DESKTOP_TEST=1 npx electron packages/desktop/src/main.js` -> verified app mount, 257 cards, bridge APIs, clean exit without errors.
 - **Packaging & Version Bump**: `npm run package:desktop` -> built `STREAMIX Setup 1.0.5.exe` (129 MB) and updated mirror `packages/desktop/dist/setup.exe`.
+
+## Player Controls Auto-Hide Bug Fix (COMPLETED)
+
+### Objective
+Fix the issue where STREAMIX Desktop player controls fail to hide automatically after 3 seconds of mouse inactivity, specifically resolving the false trigger where window repositioning during hide transitions caused synthetic mousemove events to reset the hide timer.
+
+### Root Cause
+1. **Layout Transition & Window Repositioning**:
+   - In desktop native mode, when controls hide, the canvas expands from `.player.controls-visible .player-desktop-canvas` (`top: 56px; height: calc(100% - 152px)`) to `.player.controls-hidden .player-desktop-canvas` (`top: 0; height: 100%`).
+   - `ResizeObserver` observed this canvas height expansion and called `videoHost.setBounds(...)`.
+   - `video-host.cs` executed `SetWindowPos`, moving the native window 56px upwards.
+   - When Windows moved the native window underneath the stationary cursor, Windows generated a `WM_MOUSEMOVE` message.
+2. **Missing Cursor Delta Verification**:
+   - `video-host.cs` was dispatching `{"event":"mousemove"}` solely based on time elapsed (`now - lastMouseMoveTime > 250`), without checking whether the physical mouse cursor position had actually changed.
+   - Because `WM_MOUSEMOVE` was triggered by the window moving under the mouse (or optical sensor micro-jitter), `video-host.cs` dispatched `videomousemove` to the React player.
+   - React received `videomousemove` and called `bumpControls()`, immediately setting `controlsVisible = true` and canceling the hide transition.
+
+### Solution
+1. **Screen-Space Physical Cursor Delta Check (`video-host.cs`)**:
+   - Imported Win32 `GetCursorPos(out POINT lpPoint)` to query the true global cursor screen coordinates.
+   - Stored `lastGlobalMouseX` and `lastGlobalMouseY`. Only dispatch `{"event":"mousemove"}` if the physical cursor has moved by at least 4 pixels (`dx >= 4 || dy >= 4`).
+   - When `SetWindowPos` moves the window under a stationary mouse, `dx == 0 && dy == 0`, so the synthetic message is safely ignored.
+2. **Transition Immunity & Synthetic Event Guard (`Player.jsx`)**:
+   - Added `lastHideTimeRef` and guarded both `handleMouseMove` and `videomousemove` with a 400ms transition lock (`Date.now() - lastHideTimeRef.current < 400`).
+   - In `handleMouseMove`, verified `screenX`/`screenY` delta (`dx >= 4 || dy >= 4`) before bumping controls to prevent synthetic Chromium mousemove events on element style/class changes.
+
+### Verification
+- **Compilation**: Compiled `video-host.cs` with C# 5 compiler (`csc.exe`) into `packages/desktop/bin/streamix-video-host.exe` with exit code 0.
+- **Client Build**: `npm run build` -> clean Vite build in 249ms.
+- **Server Tests**: `npm test --workspace=packages/server` -> 104/104 tests passed.
+- **Electron Verification**: `STREAMIX_DESKTOP_TEST=1 npx electron packages/desktop/src/main.js` -> verified mount, 257 cards, bridge APIs, and clean exit.
+- **Packaging & Version Bump**: `npm run package:desktop` -> automatically incremented version to **1.0.6**, generated `STREAMIX Setup 1.0.6.exe` (129 MB), and updated mirror `setup.exe`.
