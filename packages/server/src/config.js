@@ -44,7 +44,27 @@ if (process.env.STREAMIX_USER_DATA) {
   }
 }
 
-// 3. Search upward for .env from configDir and cwd
+// 3. Bundled configuration in packaged desktop app
+const bundledCandidates = [
+  path.join(configDir, "../default-config.json"),
+  path.join(configDir, "default-config.json"),
+  path.join(configDir, "../.env"),
+  path.join(configDir, ".env")
+];
+for (const cand of bundledCandidates) {
+  if (cand.endsWith(".json") && fs.existsSync(cand)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(cand, "utf8"));
+      if (parsed.tmdbApiKey && !process.env.TMDB_API_KEY) {
+        process.env.TMDB_API_KEY = parsed.tmdbApiKey;
+      }
+    } catch {}
+  } else if (cand.endsWith(".env") && fs.existsSync(cand)) {
+    loadEnvSafe(cand);
+  }
+}
+
+// 4. Search upward for .env from configDir and cwd
 loadEnvSafe(findUpEnv(configDir));
 loadEnvSafe(findUpEnv(process.cwd()));
 loadEnvSafe(path.join(repoRoot, ".env"));

@@ -268,7 +268,11 @@ export default function App() {
             <p className="err">Some sections failed to load: {sectionErrors.join("; ")}</p>
           )}
           {!loading && sections.length === 0 && (
-            <p className="muted">No sections loaded. Check that the server is running.</p>
+            <div style={{ textAlign: "center", padding: "4rem 1.5rem" }}>
+              <p className={error ? "err" : "muted"}>
+                {error || "No sections loaded. Check that the server is running."}
+              </p>
+            </div>
           )}
 
           {(view === "home" || view === "movies" || view === "series") && (

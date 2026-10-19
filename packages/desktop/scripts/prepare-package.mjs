@@ -32,6 +32,23 @@ fs.rmSync(serverDest, { recursive: true, force: true });
 fs.mkdirSync(serverSrcDest, { recursive: true });
 fs.cpSync(serverSrc, serverSrcDest, { recursive: true });
 fs.copyFileSync(serverPkgSrc, path.join(serverDest, "package.json"));
+
+const rootEnv = path.join(repoRoot, ".env");
+if (fs.existsSync(rootEnv)) {
+  fs.copyFileSync(rootEnv, path.join(serverDest, ".env"));
+  try {
+    const rawEnv = fs.readFileSync(rootEnv, "utf8");
+    const match = rawEnv.match(/TMDB_API_KEY=([^\r\n]+)/);
+    if (match && match[1].trim()) {
+      const apiKey = match[1].trim();
+      fs.writeFileSync(
+        path.join(serverDest, "default-config.json"),
+        JSON.stringify({ tmdbApiKey: apiKey }, null, 2)
+      );
+      console.log(`[prepare-package] Embedded default TMDB configuration into package build`);
+    }
+  } catch {}
+}
 console.log(`[prepare-package] Copied server files -> ${serverDest}`);
 
 // 4. Verify native MPV binaries exist in bin/mpv

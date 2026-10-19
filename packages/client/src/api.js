@@ -17,7 +17,7 @@ export async function fetchHomeSections() {
   try {
     const data = await request("/api/home");
     return data.rows.map((row) => ({ key: row.key, data: row }));
-  } catch {
+  } catch (err) {
     const results = await Promise.allSettled(
       HOME_ROWS.map((key) =>
         request(`/api/home/${key}`).then((data) => {
@@ -27,6 +27,9 @@ export async function fetchHomeSections() {
       )
     );
     const ok = results.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    if (ok.length === 0) {
+      throw err;
+    }
     return ok;
   }
 }

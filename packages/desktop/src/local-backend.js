@@ -71,7 +71,7 @@ export class LocalBackendService {
       throw new Error(`[local-backend] Could not find server script entry point.`);
     }
 
-    let userApiKey = null;
+    let userApiKey = process.env.TMDB_API_KEY || null;
     if (options.userDataPath) {
       const userConfigPath = path.join(options.userDataPath, "config.json");
       if (existsSync(userConfigPath)) {
@@ -79,6 +79,24 @@ export class LocalBackendService {
           const parsed = JSON.parse(readFileSync(userConfigPath, "utf8"));
           if (parsed.tmdbApiKey) userApiKey = parsed.tmdbApiKey;
         } catch {}
+      }
+    }
+
+    if (!userApiKey && scriptPath) {
+      const bundledCandidates = [
+        path.resolve(path.dirname(scriptPath), "../default-config.json"),
+        path.resolve(path.dirname(scriptPath), "default-config.json")
+      ];
+      for (const cand of bundledCandidates) {
+        if (existsSync(cand)) {
+          try {
+            const parsed = JSON.parse(readFileSync(cand, "utf8"));
+            if (parsed.tmdbApiKey) {
+              userApiKey = parsed.tmdbApiKey;
+              break;
+            }
+          } catch {}
+        }
       }
     }
 
