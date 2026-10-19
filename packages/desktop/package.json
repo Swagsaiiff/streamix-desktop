@@ -5,7 +5,8 @@
   "type": "module",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test:spike": "node src/spike-mpv.js"
   },
   "devDependencies": {
     "electron": "^44.9.0"
