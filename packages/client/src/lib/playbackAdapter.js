@@ -62,6 +62,12 @@ export function createDesktopMpvAdapter() {
       case "ended":
         emit("ended", data);
         break;
+      case "paused-for-cache":
+        emit("buffering", Boolean(data));
+        break;
+      case "core-idle":
+        if (data === true) emit("idle");
+        break;
       case "error":
         emit("error", data);
         break;

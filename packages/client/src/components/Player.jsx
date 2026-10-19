@@ -139,6 +139,12 @@ export default function Player({ item, onClose, onProgress }) {
       setError(null);
       setEnded(false);
       setResumedFrom(null);
+      setCurrentTime(0);
+      setDuration(0);
+      setAudioTracks([]);
+      setActiveTrack(null);
+      setSubtitleTracks([]);
+      setActiveSubtitle("no");
       try {
         const stream = await createStream(playItem.type, playItem.id, {
           signal: controller.signal,
@@ -263,22 +269,47 @@ export default function Player({ item, onClose, onProgress }) {
             }
           });
 
-          // Choose primary source: direct media URL (if playable directly) or HLS master playlist
-          const directUrl = stream.sourceUrl;
+          // Build candidate source list
+          const candidates = Array.isArray(stream.candidates) && stream.candidates.length > 0
+            ? stream.candidates
+            : stream.sourceUrl
+              ? [{ url: stream.sourceUrl, headers: stream.headers ?? {} }]
+              : [];
+
           const apiOrigin = (window.streamixDesktop?.apiUrl || (window.location.origin.startsWith("http") ? window.location.origin : "http://localhost:4000")).replace(/\/+$/, "");
           const hlsPlaylistUrl = stream.playlistUrl.startsWith("http")
             ? stream.playlistUrl
             : `${apiOrigin}${stream.playlistUrl}`;
 
-          // Try direct media URL first if available, else local server HLS playlist
-          const targetUrl = directUrl || hlsPlaylistUrl;
-          const reqHeaders = stream.headers ?? {};
+          let candidateIndex = 0;
+          let currentTargetUrl = candidates[0]?.url || hlsPlaylistUrl;
+          let currentHeaders = candidates[0]?.headers || stream.headers || {};
 
           adapter.on("error", async (err) => {
             if (cancelled) return;
-            // If direct provider source fails, attempt fallback to local server HLS session
-            if (targetUrl !== hlsPlaylistUrl && hlsPlaylistUrl) {
-              console.warn("[Player] Direct source failed, falling back to local server HLS transcode:", err);
+            // Move to next direct candidate if available
+            candidateIndex += 1;
+            if (candidateIndex < candidates.length) {
+              const next = candidates[candidateIndex];
+              currentTargetUrl = next.url;
+              currentHeaders = next.headers || {};
+              console.warn(`[Player] Candidate ${candidateIndex - 1} failed. Trying candidate ${candidateIndex}:`, next.quality || next.url);
+              try {
+                await adapter.load(currentTargetUrl, {
+                  volume: 1,
+                  headers: currentHeaders,
+                  startTime: saved?.position
+                });
+                return;
+              } catch (nextErr) {
+                console.error("[Player] Candidate load failed:", nextErr);
+              }
+            }
+
+            // If all direct candidates failed, fallback to local server HLS transcode
+            if (currentTargetUrl !== hlsPlaylistUrl && hlsPlaylistUrl) {
+              console.warn("[Player] All direct sources failed, falling back to local server HLS transcode:", err);
+              currentTargetUrl = hlsPlaylistUrl;
               try {
                 await adapter.load(hlsPlaylistUrl, {
                   volume: 1,
@@ -289,13 +320,15 @@ export default function Player({ item, onClose, onProgress }) {
                 console.error("[Player] Fallback failed:", fallbackErr);
               }
             }
-            setError(`Desktop native playback error: ${err?.message || err}`);
+
+            const message = err?.error || err?.message || err;
+            setError(`Playback error: ${message}`);
             setPhase("error");
           });
 
-          await adapter.load(targetUrl, {
+          await adapter.load(currentTargetUrl, {
             volume: 1,
-            headers: reqHeaders,
+            headers: currentHeaders,
             startTime: saved?.position
           });
 

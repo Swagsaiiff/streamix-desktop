@@ -112,6 +112,8 @@ export class MpvManager {
     await this.command("observe_property", 7, "speed");
     await this.command("observe_property", 8, "volume");
     await this.command("observe_property", 9, "mute");
+    await this.command("observe_property", 10, "paused-for-cache");
+    await this.command("observe_property", 11, "core-idle");
 
     // Load media
     await this.command("loadfile", sourceUrl, "replace");
@@ -225,7 +227,13 @@ export class MpvManager {
       this.emit("ready", {});
       this.syncTracks();
     } else if (event === "end-file") {
-      this.emit("ended", data);
+      const reason = data?.reason;
+      if (reason === "error") {
+        const errorText = data?.file_error || "Unknown playback error";
+        this.emit("error", { reason: "error", error: errorText });
+      } else {
+        this.emit("ended", data);
+      }
     }
   }
 
