@@ -16,6 +16,30 @@ const serverSrcDest = path.resolve(serverDest, "src");
 
 console.log("[prepare-package] Preparing assets for Electron packaging...");
 
+// 0. Auto-increment patch version (last digit) on package rebuild
+const desktopPkgPath = path.resolve(desktopRoot, "package.json");
+const desktopPkg = JSON.parse(fs.readFileSync(desktopPkgPath, "utf8"));
+const vParts = desktopPkg.version.split(".");
+if (vParts.length === 3 && process.env.SKIP_VERSION_BUMP !== "1") {
+  vParts[2] = String(Number(vParts[2]) + 1);
+  desktopPkg.version = vParts.join(".");
+  fs.writeFileSync(desktopPkgPath, JSON.stringify(desktopPkg, null, 2) + "\n", "utf8");
+  console.log(`[prepare-package] Auto-incremented desktop version to ${desktopPkg.version}`);
+}
+
+// Clean old dist files to keep only latest build
+const distDir = path.resolve(desktopRoot, "dist");
+if (fs.existsSync(distDir)) {
+  for (const item of fs.readdirSync(distDir)) {
+    if (item === "win-unpacked") continue; // keep cache if builder needs it, or let builder overwrite
+    try {
+      fs.rmSync(path.join(distDir, item), { recursive: true, force: true });
+    } catch {}
+  }
+  console.log(`[prepare-package] Cleaned old dist artifacts in ${distDir}`);
+}
+
+
 // 1. Verify client dist exists
 if (!fs.existsSync(clientDistSrc)) {
   console.error(`[prepare-package] Client dist not found at ${clientDistSrc}. Please run 'npm run build' first.`);

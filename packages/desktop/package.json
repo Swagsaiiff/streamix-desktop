@@ -1,7 +1,7 @@
 {
   "name": "streamix-desktop",
   "productName": "STREAMIX",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Responsive streaming desktop application with native MPV playback",
   "private": true,
   "type": "module",
@@ -12,8 +12,8 @@
     "start": "electron .",
     "test:spike": "node src/spike-mpv.js",
     "prepackage": "node scripts/prepare-package.mjs",
-    "package": "npm run prepackage && electron-builder --win nsis --x64",
-    "postpackage": "node -e \"const fs=require('node:fs'), path=require('node:path'); const candidates = ['dist/STREAMIX Setup 1.0.0.exe', 'dist/STREAMIX.Setup.1.0.0.exe']; for (const c of candidates) { if (fs.existsSync(c)) { fs.copyFileSync(c, 'dist/setup.exe'); console.log('[postpackage] Created dist/setup.exe mirror from ' + c); break; } }\""
+    "package": "electron-builder --win nsis --x64",
+    "postpackage": "node -e \"const fs=require('node:fs'), path=require('node:path'), dist=path.resolve('dist'); const exes=fs.readdirSync(dist).filter(f=>f.endsWith('.exe') && f.toLowerCase().includes('setup') && f.toLowerCase()!=='setup.exe'); if(exes.length>0){ fs.copyFileSync(path.join(dist, exes[0]), path.join(dist, 'setup.exe')); console.log('[postpackage] Created dist/setup.exe mirror from ' + exes[0]); }\""
   },
   "dependencies": {
     "express": "^5.3.0"
