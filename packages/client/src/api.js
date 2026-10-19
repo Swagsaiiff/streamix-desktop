@@ -1,7 +1,11 @@
 const HOME_ROWS = ["trending", "popular-movies", "new-releases", "top-rated", "action", "comedy", "horror", "popular-series", "action-series", "anime-airing", "anime-trending"];
 
 async function request(path, options = {}) {
-  const res = await fetch(path, options);
+  const base = typeof window !== "undefined" && window.streamixDesktop?.apiUrl
+    ? window.streamixDesktop.apiUrl.replace(/\/+$/, "")
+    : "";
+  const fullUrl = path.startsWith("http") ? path : `${base}${path}`;
+  const res = await fetch(fullUrl, options);
   const body = await res.json();
   if (!res.ok) {
     throw new Error(body.message || `Request failed with status ${res.status}`);

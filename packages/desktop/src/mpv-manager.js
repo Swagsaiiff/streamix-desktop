@@ -26,12 +26,15 @@ export class MpvManager {
 
   locateBinary() {
     const candidates = [
+      process.env.STREAMIX_MPV_PATH,
       path.resolve(rootDir, "temp/mpv-bin/mpv.exe"),
       path.resolve(rootDir, "temp/mpv-bin/mpv.com"),
       path.resolve(process.resourcesPath || "", "mpv/mpv.exe"),
+      path.resolve(process.resourcesPath || "", "bin/mpv.exe"),
+      path.resolve(rootDir, "packages/desktop/bin/mpv.exe"),
       "mpv.exe",
       "mpv"
-    ];
+    ].filter(Boolean);
     for (const cand of candidates) {
       if (path.isAbsolute(cand) && fs.existsSync(cand)) {
         return cand;

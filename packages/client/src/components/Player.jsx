@@ -265,9 +265,10 @@ export default function Player({ item, onClose, onProgress }) {
 
           // Choose primary source: direct media URL (if playable directly) or HLS master playlist
           const directUrl = stream.sourceUrl;
+          const apiOrigin = (window.streamixDesktop?.apiUrl || (window.location.origin.startsWith("http") ? window.location.origin : "http://localhost:4000")).replace(/\/+$/, "");
           const hlsPlaylistUrl = stream.playlistUrl.startsWith("http")
             ? stream.playlistUrl
-            : `${window.location.origin}${stream.playlistUrl}`;
+            : `${apiOrigin}${stream.playlistUrl}`;
 
           // Try direct media URL first if available, else local server HLS playlist
           const targetUrl = directUrl || hlsPlaylistUrl;

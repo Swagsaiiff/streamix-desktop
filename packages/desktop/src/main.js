@@ -203,6 +203,10 @@ app.whenReady().then(async () => {
   });
 });
 
+app.on("before-quit", () => {
+  mpv.stop().catch(() => {});
+});
+
 app.on("window-all-closed", () => {
   mpv.stop().catch(() => {});
   app.quit();
