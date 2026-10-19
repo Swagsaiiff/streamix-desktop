@@ -3,14 +3,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { MpvManager } from "./mpv-manager.js";
+import { LocalBackendService } from "./local-backend.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "../../..");
 const PRELOAD_PATH = path.join(__dirname, "preload.cjs");
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 const CLIENT_DIST_PATH = path.resolve(__dirname, "../../client/dist/index.html");
 
 let mainWindow = null;
 const mpv = new MpvManager();
+const localBackend = new LocalBackendService({
+  port: Number(process.env.PORT) || 4000
+});
 
 // Ensure single instance of the desktop application
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -188,9 +193,18 @@ async function createWindow() {
 
 app.whenReady().then(async () => {
   try {
+    const isDev = process.env.NODE_ENV !== "production" && !app.isPackaged;
+    // Start or attach to local backend service before creating UI window
+    await localBackend.start({
+      repoRoot,
+      resourcesPath: process.resourcesPath,
+      userDataPath: app.getPath("userData"),
+      isDev
+    });
+
     await createWindow();
   } catch (err) {
-    console.error("[desktop] Failed to create main window:", err.message);
+    console.error("[desktop] Failed to start local backend or create window:", err.message);
     app.quit();
   }
 
@@ -205,9 +219,11 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   mpv.stop().catch(() => {});
+  localBackend.stop();
 });
 
 app.on("window-all-closed", () => {
   mpv.stop().catch(() => {});
+  localBackend.stop();
   app.quit();
 });

@@ -5,7 +5,10 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TEMP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "temp", "hls");
+const defaultTempDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "temp", "hls");
+const TEMP_DIR = process.env.STREAMIX_TEMP_DIR
+  ? join(process.env.STREAMIX_TEMP_DIR, "hls")
+  : defaultTempDir;
 const HLS_TIME = 4;
 const MASTER_PLAYLIST = "master.m3u8";
 const VIDEO_PLAYLIST = "index_v0.m3u8";
