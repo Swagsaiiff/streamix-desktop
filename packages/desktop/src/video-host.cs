@@ -198,6 +198,8 @@ namespace Streamix
             public IntPtr Result = IntPtr.Zero;
         }
 
+        static ManualResetEvent destroyReady = new ManualResetEvent(false);
+
         static void EnsureTimer()
         {
             if (activeTimerId == UIntPtr.Zero)
@@ -391,10 +393,12 @@ namespace Streamix
                         StopTimer();
                         if (currentHwnd != IntPtr.Zero)
                         {
+                            ShowWindow(currentHwnd, SW_HIDE);
                             DestroyWindow(currentHwnd);
                             currentHwnd = IntPtr.Zero;
                         }
                         ownerHwnd = IntPtr.Zero;
+                        destroyReady.Set();
                     }
                     else
                     {
@@ -490,9 +494,9 @@ namespace Streamix
                     }
                     else if (cmd == "DESTROY")
                     {
+                        destroyReady.Reset();
                         PostThreadMessage(uiThreadId, WM_USER_DESTROY, IntPtr.Zero, IntPtr.Zero);
-                        currentHwnd = IntPtr.Zero;
-                        ownerHwnd = IntPtr.Zero;
+                        destroyReady.WaitOne(2000);
                         SendResponse("{\"ok\":true,\"id\":" + reqId + "}");
                     }
                     else if (cmd == "QUIT")

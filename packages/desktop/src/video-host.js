@@ -231,6 +231,9 @@ export class VideoHostManager {
     this.pendingBounds = null;
     if (this.currentHwnd) {
       try {
+        await this.sendCommand("HIDE");
+      } catch {}
+      try {
         await this.sendCommand("DESTROY");
       } catch {}
       this.currentHwnd = null;

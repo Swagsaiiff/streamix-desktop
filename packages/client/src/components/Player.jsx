@@ -756,10 +756,22 @@ export default function Player({ item, onClose, onProgress }) {
     if (switching) setSwitching(false);
   }, [current, switching]);
 
+  const handleBack = useCallback(() => {
+    if (isDesktop && mpvAdapterRef.current) {
+      try {
+        mpvAdapterRef.current.destroy();
+      } catch {}
+      mpvAdapterRef.current = null;
+    }
+    onClose();
+  }, [onClose]);
+
+
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") {
-        onClose();
+        handleBack();
         return;
       }
       if (isEditableTarget(e.target)) return;
@@ -776,7 +788,7 @@ export default function Player({ item, onClose, onProgress }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls]);
+  }, [handleBack, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls]);
 
   useEffect(() => {
     bumpControls();
@@ -886,7 +898,7 @@ export default function Player({ item, onClose, onProgress }) {
               <button type="button" className="player-btn player-btn-primary" onClick={retry}>
                 Retry
               </button>
-              <button type="button" className="player-btn" onClick={onClose}>
+              <button type="button" className="player-btn" onClick={handleBack}>
                 Back
               </button>
             </div>
@@ -897,7 +909,7 @@ export default function Player({ item, onClose, onProgress }) {
       {(phase === "ready" || controlsVisible) && (
         <>
           <div className="player-top" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="player-btn player-back" onClick={onClose} aria-label="Back to details">
+            <button type="button" className="player-btn player-back" onClick={handleBack} aria-label="Back to details">
               ‹ Back
             </button>
             <span className="player-title" title={displayTitle}>
