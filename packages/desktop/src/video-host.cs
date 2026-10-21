@@ -270,12 +270,6 @@ namespace Streamix
                         SetFocus(ownerHwnd);
                     }
                     return new IntPtr(MA_NOACTIVATE);
-                case WM_SETFOCUS:
-                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
-                    {
-                        SetFocus(ownerHwnd);
-                    }
-                    return IntPtr.Zero;
                 case WM_KEYDOWN:
                 case WM_SYSKEYDOWN:
                 case WM_KEYUP:

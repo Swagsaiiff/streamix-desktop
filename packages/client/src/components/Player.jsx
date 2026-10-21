@@ -298,6 +298,20 @@ export default function Player({ item, onClose, onProgress }) {
 
           adapter.on("ended", () => {
             if (cancelled) return;
+            if (duration <= 0 && candidateIndex + 1 < candidates.length) {
+              candidateIndex += 1;
+              const next = candidates[candidateIndex];
+              currentTargetUrl = next.url;
+              currentHeaders = next.headers || {};
+              console.warn('[Player] Candidate ended without playback. Trying next candidate:', currentTargetUrl);
+              adapter.load(currentTargetUrl, {
+                volume: 1,
+                headers: currentHeaders,
+                startTime: saved?.position,
+                bounds: computeBounds()
+              }).catch(() => {});
+              return;
+            }
             setEnded(true);
             setPlaying(false);
             if (duration > 0) {
@@ -840,7 +854,7 @@ export default function Player({ item, onClose, onProgress }) {
         e.preventDefault();
         const pct = (Number(e.key) * 10) / 100;
         if (duration > 0) {
-          seek(duration * pct);
+          seekTo(duration * pct);
         }
         bumpControls();
         return;
@@ -849,7 +863,7 @@ export default function Player({ item, onClose, onProgress }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleBack, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls, duration, seek, isDesktop]);
+  }, [handleBack, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls, duration, seekTo, isDesktop]);
 
   useEffect(() => {
     bumpControls();
