@@ -142,16 +142,16 @@ test("deduplicates concurrent resolution for the same key", async () => {
 
 test("provider param routes resolution to the named provider first", async () => {
   const cine = mockProvider({ name: "CineStream", detail: { ...VALID_DETAIL, provider: "CineStream" } });
-  const vega = mockProvider({
-    name: "VegaMovies",
+  const direct = mockProvider({
+    name: "DirectProvider",
     capabilities: { supportsStreamResolution: true },
-    detail: { id: "/m/", type: "movie", title: "Vega Title", year: 2026 }
+    detail: { id: "/m/", type: "movie", title: "Direct Title", year: 2026 }
   });
-  const resolver = createResolver({ providers: [cine, vega], fixturePath: "F" });
-  const stream = await resolver.resolveStream("movie", "/m/", { provider: "VegaMovies" });
+  const resolver = createResolver({ providers: [cine, direct], fixturePath: "F" });
+  const stream = await resolver.resolveStream("movie", "/m/", { provider: "DirectProvider" });
   assert.equal(stream.resolution.status, "provider_stream");
-  assert.equal(stream.provider.name, "VegaMovies");
-  assert.equal(vega.calls.length, 1);
+  assert.equal(stream.provider.name, "DirectProvider");
+  assert.equal(direct.calls.length, 1);
   assert.equal(cine.calls.length, 0);
 });
 
@@ -163,7 +163,7 @@ test("fixture fallback is not used when disabled and no real extractor exists", 
   });
   await assert.rejects(
     () => resolver.resolveStream("movie", "tt0000001"),
-    (err) => err instanceof ProviderError && err.code === "unsupported" && /no supported extractor/i.test(err.message)
+    (err) => err instanceof ProviderError && err.code === "unsupported" && /Settings -> Extensions/i.test(err.message)
   );
 });
 
@@ -179,92 +179,51 @@ test("fixture fallback is marked as test mode when explicitly enabled", async ()
   assert.match(stream.note, /TEST MODE/);
 });
 
-test("resolveStream surfaces provider stream errors instead of silently substituting", async () => {
-  const failing = mockProvider({ name: "VegaMovies", capabilities: { supportsStreamResolution: true } });
-  failing.resolveStream = async () => {
-    throw new ProviderError("VegaMovies detail page was fetched but no playable media URL could be extracted", "unsupported");
+test("delegates stream resolution to extensionManager when available", async () => {
+  const tmdb = mockProvider({ name: "TMDB", detail: { id: "101", type: "movie", title: "Inception", year: 2010 } });
+  const mockExtensionManager = {
+    resolveSources: async ({ title, year }) => ({
+      provider: { id: "sample-ext", name: "Sample Provider", version: "1.0.0" },
+      sources: [
+        { url: "https://example.com/stream.m3u8", quality: "1080p", format: "hls", headers: { Referer: "https://example.com" } }
+      ],
+      subtitles: [{ url: "https://example.com/en.vtt", language: "English" }]
+    })
   };
-  const resolver = createResolver({ providers: [failing], fixturePath: "C:/fixtures/multi-audio.mkv", allowFixture: false });
-  await assert.rejects(
-    () => resolver.resolveStream("movie", "tt0000001"),
-    (err) => err instanceof ProviderError && /no playable media URL/.test(err.message)
-  );
-});
 
-test("a non-requested provider rejecting an id does not abort resolution for the requested provider", async () => {
-  const cine = mockProvider({ name: "CineStream" });
-  const vega = mockProvider({ name: "VegaMovies", capabilities: { supportsStreamResolution: true } });
-  vega.getDetails = async () => {
-    throw new ProviderError("id does not belong to VegaMovies", "unsupported");
-  };
-  const resolver = createResolver({ providers: [cine, vega], fixturePath: null, allowFixture: false });
-  await assert.rejects(
-    () => resolver.resolveStream("movie", "tt0000001", { provider: "CineStream" }),
-    (err) =>
-      err instanceof ProviderError &&
-      err.code === "unsupported" &&
-      /no supported extractor in: CineStream/i.test(err.message)
-  );
-});
-
-test("a permanent error from the explicitly requested provider aborts immediately", async () => {
-  const cine = mockProvider({ name: "CineStream", detail: null });
-  const vega = mockProvider({ name: "VegaMovies" });
-  const resolver = createResolver({ providers: [cine, vega], fixturePath: null, allowFixture: false });
-  await assert.rejects(
-    () => resolver.resolveStream("movie", "tt0000001", { provider: "CineStream" }),
-    (err) => err instanceof ProviderError && err.code === "not_found"
-  );
-  assert.equal(vega.calls.length, 0);
-});
-
-test("bridges to another provider's resolveByTitle when the requested provider has no extractor", async () => {
-  const cine = mockProvider({ name: "CineStream", detail: { id: "tt1", type: "movie", title: "War Dogs", year: 2016 } });
-  const vega = mockProvider({ name: "VegaMovies", capabilities: { supportsStreamResolution: true } });
-  vega.getDetails = async () => {
-    throw new ProviderError("id does not belong to VegaMovies", "unsupported");
-  };
-  vega.resolveByTitle = async ({ title, year }) => ({
-    url: "https://cdn.example.net/war-dogs.mkv?sig=1",
-    headers: { Referer: "https://vegamovies.gallery/" },
-    mediaType: "mkv",
-    sourceType: "provider",
-    matchedTitle: title,
-    matchedYear: year,
-    matchScore: 1120,
-    attempts: [{ title, ok: false }, { title, ok: true }],
-    note: "Resolved via VegaMovies title match"
+  const resolver = createResolver({
+    providers: [tmdb],
+    fixturePath: "C:/fixture.mkv",
+    allowFixture: false,
+    extensionManager: mockExtensionManager
   });
 
-  const resolver = createResolver({ providers: [cine, vega], fixturePath: "F" });
-  const stream = await resolver.resolveStream("movie", "tt1", { provider: "CineStream" });
+  const stream = await resolver.resolveStream("movie", "101");
   assert.equal(stream.resolution.status, "provider_stream");
-  assert.equal(stream.provider.name, "VegaMovies");
-  assert.equal(stream.resolution.matchedBy, "title");
-  assert.equal(stream.resolution.requestedProvider, "CineStream");
-  assert.equal(stream.resolution.matchScore, 1120);
-  assert.equal(stream.resolution.matchesTried, 1);
-  assert.equal(stream.sourceUrl, "https://cdn.example.net/war-dogs.mkv?sig=1");
-  assert.equal(stream.headers.Referer, "https://vegamovies.gallery/");
+  assert.equal(stream.provider.name, "Sample Provider");
+  assert.equal(stream.sourceUrl, "https://example.com/stream.m3u8");
+  assert.equal(stream.mediaType, "hls");
+  assert.equal(stream.subtitles.length, 1);
+  assert.equal(stream.variants.length, 1);
 });
 
-test("bridge failure is reported in the final unsupported error", async () => {
-  const cine = mockProvider({ name: "CineStream", detail: { id: "tt1", type: "movie", title: "Obscure Film", year: 2016 } });
-  const vega = mockProvider({ name: "VegaMovies", capabilities: { supportsStreamResolution: true } });
-  vega.getDetails = async () => {
-    throw new ProviderError("id does not belong to VegaMovies", "unsupported");
-  };
-  vega.resolveByTitle = async () => {
-    throw new ProviderError('VegaMovies has no close match for "Obscure Film" (2016)', "not_found");
+test("propagates extensionManager error honestly without falling back to core providers", async () => {
+  const tmdb = mockProvider({ name: "TMDB", detail: { id: "101", type: "movie", title: "Unresolvable", year: 2026 } });
+  const mockExtensionManager = {
+    resolveSources: async () => {
+      throw new Error("No playable streams found across enabled extensions for 'Unresolvable'");
+    }
   };
 
-  const resolver = createResolver({ providers: [cine, vega], fixturePath: null, allowFixture: false });
+  const resolver = createResolver({
+    providers: [tmdb],
+    fixturePath: "C:/fixture.mkv",
+    allowFixture: false,
+    extensionManager: mockExtensionManager
+  });
+
   await assert.rejects(
-    () => resolver.resolveStream("movie", "tt1", { provider: "CineStream" }),
-    (err) =>
-      err instanceof ProviderError &&
-      err.code === "unsupported" &&
-      /title-based lookup failed/.test(err.message) &&
-      /no close match/.test(err.message)
+    () => resolver.resolveStream("movie", "101"),
+    (err) => err instanceof ProviderError && /No playable streams found/.test(err.message)
   );
 });

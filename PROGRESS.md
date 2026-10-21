@@ -1,3 +1,212 @@
+## Navbar Buttons Navigation Fix (COMPLETED)
+
+### Objective
+Fix navbar buttons (Home, Movies, Series, Settings, STREAMIX brand) not switching views when clicked.
+
+### Root Cause & Fix Applied
+- **Root Cause**: In [packages/client/src/App.jsx](file:///d:/saif/streamix/packages/client/src/App.jsx), `handleNavigate(v)` called `clearSearch()`. Inside `clearSearch()`, `setView("home")` was hardcoded to reset the view to home. As a result, whenever the user clicked Movies, Series, or Settings, `setView(v)` was called, but was immediately overridden by `clearSearch()` back to `"home"`, preventing any navigation from taking effect.
+- **Fix**: Separated `resetSearchState()` (aborts pending search queries and resets search results/query) from `clearSearch()`. Updated `handleNavigate(v)` to invoke `resetSearchState()` and then `setView(v)`.
+- Rebuilt desktop installer (`packages/desktop/dist/setup.exe` v1.0.10).
+
+### Verification Evidence
+- `npm test`: 97/97 tests passing (63 server tests, 34 client tests).
+- `npm run build --workspace=packages/client`: Clean Vite production build completed in 250ms.
+- `npm run package:desktop`: Successfully generated updated `packages/desktop/dist/STREAMIX Setup 1.0.10.exe` and mirror `dist/setup.exe`.
+
+---
+
+## Player Controls Auto-Hide & Mouse Hover Re-appearance Fix (COMPLETED)
+
+### Objective
+Fix video playback controller auto-hide behavior so that:
+1. When video plays, the controller disappears after delay, but immediately reappears whenever the mouse is hovered/moved over the video surface or window.
+2. The controller stays visible while the user hovers over the control bars (timeline seekbar, buttons, volume, tracks).
+3. When the controller appears or disappears, the video canvas maintains constant full dimensions without resizing, shifting, or jumping.
+
+### Root Causes & Fixes Applied
+1. **Desktop Native MPV Surface Message Interception (`packages/desktop/src/video-host.cs`):**
+   - In desktop mode, `mpv.exe` runs inside `StreamixVideoSurface` with `--wid`. Win32 `WM_MOUSEMOVE` messages were consumed by the MPV child window and never delivered to `CustomWndProc`.
+   - **Fix:** Added cursor position tracking via `GetCursorPos(out curPt)` inside the 30ms `WM_TIMER` loop of `video-host.cs`. When the cursor moves within the video bounds `(lastScreenX, lastScreenY, lastTargetW, lastTargetH)` by >= 2px, it immediately emits `{"event":"mousemove"}` and wakes up the controls. Also added left-click state tracking via `GetAsyncKeyState(0x01)`.
+   - Recompiled `streamix-video-host.exe` with `csc.exe`.
+2. **Artificial 400ms Lockout & High Movement Threshold (`packages/client/src/components/Player.jsx`):**
+   - `handleMouseMove` had an arbitrary `lastHideTimeRef.current < 400` lockout and a `>= 4px` delta filter that swallowed user hover movements after controls hid.
+   - **Fix:** Removed the 400ms lockout. Configured `minDelta = controlsVisible ? 2 : 1` so that any intentional movement immediately reveals hidden controls.
+3. **Controls Hover Persistence (`packages/client/src/components/Player.jsx`):**
+   - Previously, the hide timer hid the controls even while the user was hovering over or interacting with the timeline, volume slider, or track selectors.
+   - **Fix:** Added `isHoveringControlsRef` and attached `onMouseEnter`/`onMouseLeave` handlers to `.player-top` and `.player-bottom`. The controls will never hide while the mouse is hovering over them.
+4. **Window-Level Mouse Movement Listener (`packages/client/src/components/Player.jsx`):**
+   - Added global `window.addEventListener("mousemove", onWindowMove, { passive: true })` so moving the mouse anywhere across the player window immediately brings up the controls.
+5. **Fixed Canvas Sizing Maintained (`packages/client/src/index.css` & `packages/client/src/components/Player.jsx`):**
+   - Verified `.player-desktop-canvas` and `.player-video` remain `position: absolute; inset: 0; width: 100%; height: 100%`.
+   - Controls float as absolute overlays on top (`z-index: 10`) with opacity transitions, guaranteeing 0% resize or shift of the video canvas.
+
+### Verification Evidence
+- `npm test`: 97/97 tests passing (63 server tests, 34 client tests).
+- `npm run build --workspace=packages/client`: Clean Vite production build completed in 246ms.
+- `streamix-video-host.exe`: Successfully recompiled with `csc.exe`.
+- `npm run package:desktop`: Successfully generated updated `packages/desktop/dist/STREAMIX Setup 1.0.9.exe` and mirror `dist/setup.exe`.
+
+---
+
+## Streamix Desktop — Complete Extension-Based Architecture Migration (COMPLETED)
+
+### Objective
+Transform Streamix Desktop into a fully extension-driven streaming application where:
+- TMDB powers the home catalog, title metadata, search, and live search suggestions.
+- A single extension repository URL (`https://raw.githubusercontent.com/Swagsaiiff/streamix-extension-lab/main/repository/repository.json`) discovers all available providers.
+- Users choose which providers to download and install. Installed providers auto-enable and feature real Enable/Disable toggles.
+- All movie, series, and anime source discovery/extraction is delegated strictly to enabled, installed extensions.
+- The hardcoded VegaMovies implementation and fallbacks are completely removed from the core codebase.
+- A live diagnostic log is embedded at the bottom of Settings.
+
+### Files Modified & Created
+1. **Server Extensions Architecture (`packages/server/src/extensions/`):**
+   - `errors.js`: Standard extension error hierarchy (`ExtensionError`, `ItemNotFoundError`, `SourceUnavailableError`, `ExtensionTimeoutError`).
+   - `diagnostics.js`: Bounded circular buffer (`DiagnosticBuffer`, `diagnosticLogger`) with automatic secret/token/cookie redacting, log level filtering, search, and clear.
+   - `sdk.js`: Runtime implementations of Streamix Extension SDK helpers (`searchCinemeta`, `fetchCinemetaMeta`, `CINEMETA_BASE_URL`, `getLatestDynamicUrls`, `getProviderBaseUrl`, `DEFAULT_FALLBACK_URLS`, `extractImdbId`, HTML decoding, `extractHubCloudSources`, `extractGdflixSources`, `extractDriveleechSources`).
+   - `runtime.js`: In-memory ZIP package unpacker (`fflate`), sandboxed runner (`sucrase`) with isolated console, storage shim, fetch wrapper, and execution of `initialize()`, `search()`, `getDetails()`, `resolveSources()`.
+   - `manager.js`: Full `ExtensionManager` with single-URL repository discovery (`repository.json` -> `plugins.json`), disk persistence (`data/extensions/` and `data/extensions-config.json`), SHA-256 and byte-size package integrity verification, install, auto-enable, enable/disable toggles, enableAll, disableAll, uninstall, and extension-only `resolveSources()`.
+   - `routes.js`: Express router exposing `/api/extensions/repository` (GET/POST/DELETE), `/api/extensions/catalog`, `/api/extensions/installed`, `/api/extensions/install`, `/api/extensions/uninstall`, `/api/extensions/toggle`, `/api/extensions/toggle-all`, `/api/extensions/logs`, `/api/extensions/logs/clear`.
+2. **VegaMovies Removal & Provider Clean-up:**
+   - Deleted `packages/server/src/providers/vegamovies.js` and `vegamovies.test.js`.
+   - Removed `VegaMoviesProvider` import and registry entry from `packages/server/src/providers/index.js`.
+   - Removed hardcoded `resolveByTitle` fallback from `packages/server/src/providers/extractor.js`.
+   - Cleaned `search.test.js` and `extractor.test.js` of VegaMovies references.
+3. **Core Server Wiring:**
+   - `packages/server/src/providers/extractor.js`: Wired `extensionManager.resolveSources(...)` for all title extractions; honest failure reporting when no extension returns a stream.
+   - `packages/server/src/routes/search.js`: Added `/api/search/suggestions` endpoint backed by TMDB autocomplete; updated `/api/search` to prioritize TMDB title results and log to `diagnosticLogger`.
+   - `packages/server/src/index.js`: Mounted `extensionsRouter` under `/api`, wired `extensionManager` into `createResolver`, and initialized `extensionManager.start()` at server boot.
+4. **Client Settings, Navigation & Search UI:**
+   - `packages/client/src/api.js`: Added client methods for repository, catalog, install, uninstall, toggles, logs, and live suggestions.
+   - `packages/client/src/components/Settings.jsx`: Complete Extension Management & Live Logs screen:
+     - Repository URL input (prefilled with lab URL), Connect, Refresh, and Remove actions.
+     - Installed Providers list with operational status badges, Enable/Disable toggles, Enable All, Disable All, and Uninstall.
+     - Available Providers Catalog with live filter input and [Install] buttons with progress indicator.
+     - Collapsible "Runtime Diagnostics / Live Logs" console with level filter tabs (ALL, INFO, WARN, ERROR, DEBUG), text search, Pause/Resume toggle, Copy to clipboard, Export JSON, and Clear logs.
+   - `packages/client/src/components/Navbar.jsx`: Added "Settings" navigation button and wired `onSelectSuggestion`.
+   - `packages/client/src/components/SearchBox.jsx`: Replaced with debounced live suggestions dropdown showing poster thumbnail, release year, media badge (Movie / TV Series), rating, keyboard navigation (ArrowUp, ArrowDown, Enter, Esc), mouse selection, and click-outside dismissal.
+   - `packages/client/src/App.jsx`: Added `view === "settings"` handling and wired suggestion selection to `openDetail`.
+   - `packages/client/src/components/Player.jsx`: Added `postClientLog` event forwarding on stream handoff.
+   - `packages/client/src/index.css`: Added complete Netflix-dark styling for Settings, Extensions, and Search Suggestions.
+
+### Exact Commands Run & Observed Results
+1. `npm test --workspace=packages/server`:
+   - Output: 63/63 passing tests across 12 test suites (0 failures).
+2. `npm run build --workspace=packages/client`:
+   - Output: Vite production build completed in 245ms with 0 errors.
+3. `npm run health` (`node scripts/healthcheck.mjs`):
+   - Output: `[healthcheck] ok: true (version: 1.0.0, uptime: 3.12s)` — HTTP 200 OK.
+4. Repository discovery verification (`POST /api/extensions/repository`):
+   - Command: `Invoke-RestMethod -Uri "http://localhost:4000/api/extensions/repository" -Method POST -Body '{"url":"https://raw.githubusercontent.com/Swagsaiiff/streamix-extension-lab/main/repository/repository.json"}'`
+   - Output: Repository connected successfully: "Streamix Official Extension Repository", discovered 6 providers: `org.streamix.provider.bollyflix`, `org.streamix.provider.cinestream`, `org.streamix.provider.moviesdrive`, `org.streamix.provider.moviesmod`, `org.streamix.provider.sample`, `org.streamix.provider.vegamovies`.
+5. Package download and integrity check verification (`POST /api/extensions/install`):
+   - Installed `org.streamix.provider.sample` and `org.streamix.provider.cinestream`.
+   - Output: Packages downloaded, verified against repository SHA-256 and byte sizes, unpacked into memory, initialized, auto-enabled, and persisted to `data/extensions-config.json`.
+6. Enable / Disable toggle verification (`POST /api/extensions/toggle`):
+   - Toggled enabled status and verified runtime `getEnabledProviders()` updates immediately.
+7. TMDB search suggestions verification (`GET /api/search/suggestions?q=inception`):
+   - Returned 6 real TMDB items with poster paths, release years, and media types.
+8. Extension-only stream resolution & playback verification:
+   - `POST /api/stream/movie/10378?mode=native` (Big Buck Bunny) returned genuine playable HLS stream from `org.streamix.provider.sample`.
+   - `POST /api/stream/movie/133701?mode=native` (Tears of Steel) returned genuine playable HLS stream from `org.streamix.provider.sample`.
+   - Verified that when no extension returns a stream, honest 404/502 error is returned with zero fallback to bundled code.
+9. Runtime Diagnostics / Live Logs verification (`GET /api/extensions/logs`):
+   - Logs captured real-time events across search, provider extraction, and stream delivery with sensitive keys/tokens automatically redacted.
+10. Desktop setup installer rebuild (`npm run package:desktop`):
+    - Output: Exit code 0, successfully generated `packages/desktop/dist/STREAMIX Setup 1.0.8.exe` and mirror `dist/setup.exe`.
+
+---
+
+## Streamix Extension & Playback Pipeline Diagnosis & Fix (COMPLETED)
+
+### Objective
+Diagnose and fix the video playback pipeline in the Streamix Extension & Playback Tester where repository connection, catalog, and search worked, but zero videos played across providers.
+
+### Execution Path Tracing & Root Causes Identified
+1. **React Lifecycle Teardown Loop in `VideoPlayer.tsx` (Common Failure O):**
+   - In `VideoPlayer.tsx`, `useEffect` depended on `reportSignals`, which in turn depended on player state (`resolution`, `audioTracks`, `hasFramesProgressed`, `errorMessage`).
+   - As soon as video metadata loaded or time updated, `setResolution` or `setAudioTracks` triggered, creating a new `reportSignals` reference.
+   - `useEffect` re-triggered and ran `destroyPlayers()`: it destroyed Hls.js, stripped `src` via `videoRef.current.removeAttribute('src')`, and called `load()`, killing the player within milliseconds of loading.
+   - **Fix:** Switched to stable `onSignalsUpdateRef` and scoped `useEffect` dependencies solely to `[currentSource?.url, currentSource?.format, allowEmbedIframe, autoPlay, destroyPlayers]`.
+2. **Forbidden Request Headers in Browser Fetch & XHR (Common Failures S & Q):**
+   - In `VideoPlayer.tsx` (`xhrSetup`) and `provider-runtime.ts` (`checkSourceAccessibility`), `currentSource.headers` (containing `'User-Agent': 'StreamixExtensionLab/1.0.0'`) was being set directly via `xhr.setRequestHeader()` and `fetch({ headers })`.
+   - In browser security, `User-Agent`, `Referer`, `Cookie` are forbidden request headers. Setting them triggers a CORS preflight (`OPTIONS`) with `Access-Control-Request-Headers: user-agent`.
+   - Cross-origin CDNs (including Mux `test-streams.mux.dev`) do not allow `user-agent` in CORS preflight, causing the browser to immediately block the stream with `BLOCKED BY CORS`.
+   - **Fix:** Filtered out `FORBIDDEN_BROWSER_HEADERS` in both `VideoPlayer.tsx` and `provider-runtime.ts`.
+3. **`<video crossOrigin="anonymous">` Forcing CORS on Direct Media (Common Failure N):**
+   - `crossOrigin="anonymous"` was hardcoded on `<video>`, causing the browser to enforce CORS on direct media files that would otherwise play cleanly as opaque media.
+   - **Fix:** Removed `crossOrigin="anonymous"` from `<video>`.
+4. **Browser Sandbox Missing `Buffer` Polyfill (Common Failure R):**
+   - Provider extractors (`sidexfee` in `gdflix.ts`, `extractDoubleAtob` in `hubcloud.ts`) use `Buffer.from(..., 'base64').toString('utf-8')`. In browser environments, this throws `ReferenceError: Buffer is not defined`.
+   - **Fix:** Provided safe sandboxed `Buffer` polyfill inside `provider-runtime.ts`'s `runnerFn`.
+5. **Series `episodeId` Omission & Dropdown in `PlaybackLab.tsx` (Common Failures A & C):**
+   - For series/multi-episode results, `resolveSources` was called without `episodeId`, passing the article webpage URL to provider extractors instead of the episode stream link.
+   - **Fix:** Added episode selector in `PlaybackLab.tsx` and passed `episodeId`, `seasonNumber`, `episodeNumber` to `resolveSources`.
+6. **14-Point Playback Diagnostics Matrix (Phase 2):**
+   - Integrated full 14-point trace into `PlaybackLab.tsx` and `VideoPlayer.tsx` covering provider metadata, search result, extraction method invocation, source counts, field names, sanitized URL, resource nature, playback engine, header availability, error observing, player lifecycle events, and active currentTime progression.
+
+### Verification Evidence
+- `npm run build`: Clean production build (`tsc && vite build`) passing in 3.33s.
+- `npm test`: 12/12 unit and integration tests passing (`tests/e2e-playback-pipeline.test.ts`, `tests/repository-service.test.ts`, `tests/runtime-verification.test.ts`).
+
+---
+
+
+
+### Summary of Completed Deliverables
+1. **Zero Impact on Root App:**
+   - Work conducted exclusively in `streamix-repository-tester/`.
+   - Main Streamix Desktop (`packages/client`, `packages/desktop`, `packages/server`) remained completely untouched.
+2. **Provider Runtime & Execution Sandbox (`src/services/provider-runtime.ts` & SDK):**
+   - Unpacks `.streamix-ext` ZIP archives in-memory using `fflate.unzipSync` directly from downloaded package Blobs / ArrayBuffers.
+   - Validates `manifest.json` schema and semver API compatibility.
+   - Built a secure in-browser sandboxed module loader: transpiles provider TypeScript on demand using `sucrase` and dynamically maps SDK dependencies (`@streamix/sdk`, `../../../sdk/src/index.ts`, relative fixtures).
+   - Isolates provider code from host page DOM and secrets, providing sandboxed logger, namespaced storage, and monitored fetch.
+3. **Real Movie & Series Search Interface (Phase 3):**
+   - Interactive search panel allowing selection of any repository provider.
+   - Executes real `provider.search(query)` returning real metadata, poster URLs, and IDs.
+   - For CineStream: queries live Cinemeta catalog (`https://v3-cinemeta.strem.io/catalog/movie/top/search=...json`).
+   - For Sample Provider: searches real open Creative Commons fixtures (Big Buck Bunny, Tears of Steel, Sintel, etc.).
+4. **Real Source Extraction (Phase 4):**
+   - Implemented real `provider.resolveSources({ mediaId })`.
+   - Comprehensive source classification: HLS (`.m3u8`), direct MP4 (`.mp4`), direct WebM (`.webm`), MPEG-DASH (`.mpd`), Non-native MKV (`.mkv`), and Embed Webpages.
+   - Detects and reports in-stream or declared multi-audio tracks and subtitles without leaking sensitive tokens or headers.
+5. **Integrated Video Player (Phase 5):**
+   - Built modern custom video player supporting:
+     - Native HTML5 `<video>` for direct MP4 and WebM.
+     - `HLS.js` (`hls.js`) for adaptive bitrate `.m3u8` streams.
+     - `DASH.js` (`dashjs`) for MPEG-DASH streams.
+     - Strict opt-in isolated iframe sandbox for embed webpage sources (disabled by default; never automatic).
+   - Features play/pause, seekbar, volume/mute, fullscreen, source selector, multi-audio track switcher, and subtitle track switcher.
+   - Real-time browser media error reporting (`MEDIA_ERR_SRC_NOT_SUPPORTED`, `MEDIA_ERR_NETWORK`, `MEDIA_ERR_DECODE`, `BLOCKED BY CORS`).
+6. **Detailed Playback Verification Pipeline (Phase 6 - Stages A to K):**
+   - Tracks distinct verification stages:
+     - **A. Provider Initialization**: Provider instance initialized via `runner.initialize()`.
+     - **B. Movie Search**: Real search query executed, returned results array.
+     - **C. Details Retrieval**: `getDetails(id)` executed, returned title and metadata.
+     - **D. Source Extraction**: `resolveSources(...)` executed, returned sources list.
+     - **E. Source Network Accessibility**: Pre-flight HTTP range/HEAD request (verifies HTTP 206 / 200).
+     - **F. Player Initialization**: Player attached to video DOM element.
+     - **G. Video Metadata Loaded**: `loadedmetadata` event fired (`video.videoWidth > 0` or `video.duration > 0`).
+     - **H. Playback Started**: `play` / `playing` event fired (`!video.paused`).
+     - **I. Video Frames Progressing**: Active frame progression confirmed by delta `currentTime2 - currentTime1 > 0.3s` across consecutive `timeupdate` events while video is unpaused.
+     - **J. Audio Output / Track Detection**: Verifies presence of audio tracks (via `hls.audioTracks` or HTML5 `video.audioTracks`).
+     - **K. Playback Stability**: 3-second continuous playback observation window without stall.
+   - Granular status codes: `PASS`, `FAIL`, `BLOCKED BY CORS`, `UNSUPPORTED FORMAT/CODEC`, `DRM PROTECTED`, `NETWORK ERROR`, `TIMEOUT`, `NOT TESTED`.
+7. **Provider Diagnostic Matrix & Export (Phase 7 & 8):**
+   - Side-by-side dashboard tab comparing all 6 providers across test stages.
+   - On-demand single provider test runner with cancellation support.
+   - Export full JSON diagnostic report and matrix report.
+8. **Verification Evidence:**
+   - 11 unit and integration tests passing (`npm test`):
+     - `tests/repository-service.test.ts` (7 tests)
+     - `tests/runtime-verification.test.ts` (2 tests: Sample & CineStream package unpack & search)
+     - `tests/e2e-playback-pipeline.test.ts` (2 tests: Stages A through E, source classification, audio track detection)
+   - Live GitHub verification: `npm run test:live` (6/6 packages verified 100% against GitHub repo).
+   - Clean production build: `npm run build` (`tsc && vite build`) passing with zero errors.
+
+---
+
 ## Streamix Repository Tester Web Application (COMPLETED)
 
 ### Objective

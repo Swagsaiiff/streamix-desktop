@@ -65,3 +65,12 @@ temp/fixtures/*
 /vod/
 /webvtt/
 /yuv420p/
+
+# Server runtime extension storage
+packages/server/data/
+
+# Local backups and sibling projects
+*.zip
+streamix-extension-lab/
+streamix-repository-tester/
+

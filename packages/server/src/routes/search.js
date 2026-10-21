@@ -2,8 +2,10 @@ import { Router } from "express";
 import { sendError } from "../errors.js";
 import { logger } from "../logger.js";
 import { listSearchProviders } from "../providers/index.js";
+import { diagnosticLogger } from "../extensions/diagnostics.js";
 
 const CACHE_TTL_MS = 600000;
+const SUGGESTION_TTL_MS = 180000;
 // Must exceed the provider's own per-request timeout (15s) so a slow provider returns
 // partial results instead of being dropped wholesale during traffic spikes.
 const PROVIDER_TIMEOUT_MS = 20000;
@@ -92,8 +94,49 @@ function withTimeout(promise, ms, label) {
   });
 }
 
-export function searchRouter({ provider, enricher, cache }) {
+export function searchRouter({ provider, tmdbProvider = null, enricher, cache }) {
   const router = Router();
+  const primaryTmdb = tmdbProvider || (provider?.getName?.() === "TMDB" ? provider : null);
+
+  // Live search suggestions endpoint (debounced on client, fast TMDB autocomplete)
+  router.get("/search/suggestions", async (req, res) => {
+    const rawQ = req.query.q;
+    if (!rawQ || String(rawQ).trim().length < 2) {
+      return res.json({ query: String(rawQ || ""), count: 0, items: [] });
+    }
+    const q = String(rawQ).trim();
+    const cacheKey = `route:search:suggestions:${q.toLowerCase()}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json({ ...cached, cached: true });
+
+    diagnosticLogger.debug("search", "suggestions_query", `Fetching suggestions for "${q}"`);
+    try {
+      let rawItems = [];
+      if (primaryTmdb && primaryTmdb.isConfigured()) {
+        rawItems = await primaryTmdb.search(q);
+      } else if (provider && typeof provider.search === "function") {
+        rawItems = await provider.search(q);
+      }
+
+      const items = rankSearchResults(rawItems, q).slice(0, 6).map((item) => ({
+        id: item.id,
+        tmdbId: item.tmdbId || item.id,
+        title: item.title,
+        year: item.year,
+        type: item.type || "movie",
+        poster: item.poster,
+        rating: item.rating,
+        overview: item.overview
+      }));
+
+      const body = { query: q, count: items.length, items };
+      cache.set(cacheKey, body, SUGGESTION_TTL_MS);
+      return res.json(body);
+    } catch (err) {
+      diagnosticLogger.warn("search", "suggestions_error", `Suggestions error for "${q}": ${err.message}`);
+      return res.json({ query: q, count: 0, items: [] });
+    }
+  });
 
   router.get("/search", async (req, res) => {
     const validated = validateQuery(req.query.q);
@@ -105,6 +148,33 @@ export function searchRouter({ provider, enricher, cache }) {
     const cached = cache.get(cacheKey);
     if (cached) return res.json({ ...cached, cached: true });
 
+    diagnosticLogger.info("search", "search_start", `Executing search for "${q}"`);
+
+    // Priority 1: Use TMDB directly if configured
+    if (primaryTmdb && primaryTmdb.isConfigured()) {
+      try {
+        const tmdbItems = await withTimeout(primaryTmdb.search(q), PROVIDER_TIMEOUT_MS, "TMDB");
+        if (tmdbItems && tmdbItems.length > 0) {
+          const ranked = rankSearchResults(tmdbItems, q);
+          const body = {
+            query: q,
+            count: ranked.length,
+            providers: [{ provider: "TMDB", count: ranked.length, ms: 0, error: null }],
+            enrichment: { status: "native_tmdb", reason: null, matched: ranked.length },
+            cached: false,
+            stale: false,
+            items: ranked
+          };
+          cache.set(cacheKey, body, CACHE_TTL_MS);
+          diagnosticLogger.info("search", "search_complete", `TMDB search returned ${ranked.length} results for "${q}"`);
+          return res.json(body);
+        }
+      } catch (err) {
+        diagnosticLogger.warn("search", "tmdb_search_error", `TMDB search failed for "${q}": ${err.message}`);
+      }
+    }
+
+    // Fallback: query other search providers
     const searchProviders = listSearchProviders({ cache });
     const diagnostics = [];
 
@@ -131,6 +201,7 @@ export function searchRouter({ provider, enricher, cache }) {
     if (successful.length === 0) {
       const allFailed = diagnostics.every((d) => d.error !== null);
       logger.warn("search.no_results", { query: q, allFailed, diagnostics });
+      diagnosticLogger.warn("search", "no_results", `No results found for "${q}" across providers`);
     }
 
     const items = rankSearchResults(mergeSearchResults(settled), q);

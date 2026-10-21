@@ -8,6 +8,7 @@ import SkeletonRow from "./components/SkeletonRow.jsx";
 import DetailModal from "./components/DetailModal.jsx";
 import Player from "./components/Player.jsx";
 import ContinueWatching from "./components/ContinueWatching.jsx";
+import Settings from "./components/Settings.jsx";
 import { progressStore } from "./lib/progress.js";
 
 export default function App() {
@@ -88,7 +89,7 @@ export default function App() {
     [searchControllerRef]
   );
 
-  const clearSearch = useCallback(() => {
+  const resetSearchState = useCallback(() => {
     if (searchControllerRef.current) {
       searchControllerRef.current.abort();
     }
@@ -96,8 +97,12 @@ export default function App() {
     setSearchQuery("");
     setSearchResult(null);
     setSearchState("idle");
-    setView("home");
   }, []);
+
+  const clearSearch = useCallback(() => {
+    resetSearchState();
+    setView("home");
+  }, [resetSearchState]);
 
   const openDetail = useCallback(
     async (item) => {
@@ -221,11 +226,9 @@ export default function App() {
   }, [visibleItems]);
 
   const handleNavigate = useCallback((v) => {
+    resetSearchState();
     setView(v);
-    if (v === "home") {
-      clearSearch();
-    }
-  }, [clearSearch]);
+  }, [resetSearchState]);
 
   return (
     <main className="app">
@@ -233,10 +236,13 @@ export default function App() {
         view={view}
         onNavigate={handleNavigate}
         onSearch={handleSearch}
+        onSelectSuggestion={(item) => openDetail(item)}
         searchState={searchState}
       />
 
-      {searchState !== "idle" && view === "search" ? (
+      {view === "settings" ? (
+        <Settings />
+      ) : searchState !== "idle" && view === "search" ? (
         <section className="search-results">
           <div className="row-header">
             <h2>Results for "{searchQuery}"</h2>

@@ -11,6 +11,8 @@ import { providersRouter } from "./routes/providers.js";
 import { createResolver } from "./providers/extractor.js";
 import { createStreamManager } from "./providers/stream.js";
 import { logger } from "./logger.js";
+import { extensionManager } from "./extensions/manager.js";
+import { extensionsRouter } from "./extensions/routes.js";
 
 const routeCache = new TtlCache({ ttlMs: 300000, maxEntries: 200 });
 const providerCache = new TtlCache({ ttlMs: 300000, maxEntries: 200 });
@@ -29,7 +31,8 @@ const streamManager = createStreamManager({
 const resolver = createResolver({
   providers,
   fixturePath: config.fixturePath,
-  allowFixture: config.fixtureFallback
+  allowFixture: config.fixtureFallback,
+  extensionManager
 });
 
 const app = express();
@@ -69,8 +72,9 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/home", homeRouter({ tmdbProvider, provider, enricher, cache: routeCache }));
-app.use("/api", searchRouter({ provider, enricher, cache: routeCache }));
+app.use("/api", searchRouter({ provider, tmdbProvider, enricher, cache: routeCache }));
 app.use("/api", detailRouter({ provider, cache: routeCache, providerOptions: { cache: providerCache } }));
+app.use("/api", extensionsRouter());
 app.use(
   "/api",
   streamRouter({
@@ -92,6 +96,12 @@ app.use((req, res) => {
 
 app.listen(PORT, async () => {
   logger.info("server.start", { port: PORT, provider: provider.getName(), tmdbEnrichment: enricher.isEnabled ? "enabled" : "disabled" });
+  try {
+    await extensionManager.start();
+    logger.info("extensions.ready", {});
+  } catch (err) {
+    logger.error("extensions.start_failed", { error: err.message });
+  }
   try {
     await streamManager.initHlsDir();
     logger.info("hls.workspace_ready", {});

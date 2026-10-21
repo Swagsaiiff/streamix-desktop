@@ -1,6 +1,6 @@
 import SearchBox from "./SearchBox.jsx";
 
-export default function Navbar({ view, onNavigate, onSearch, searchState }) {
+export default function Navbar({ view, onNavigate, onSearch, onSelectSuggestion, searchState }) {
   return (
     <header className="navbar">
       <button className="brand-btn" onClick={() => onNavigate("home")}>
@@ -16,8 +16,15 @@ export default function Navbar({ view, onNavigate, onSearch, searchState }) {
         <button className={view === "series" ? "nav-link active" : "nav-link"} onClick={() => onNavigate("series")}>
           Series
         </button>
+        <button className={view === "settings" ? "nav-link active" : "nav-link"} onClick={() => onNavigate("settings")}>
+          Settings
+        </button>
       </nav>
-      <SearchBox onSearch={onSearch} disabled={searchState === "loading"} />
+      <SearchBox
+        onSearch={onSearch}
+        onSelectSuggestion={onSelectSuggestion}
+        disabled={searchState === "loading"}
+      />
     </header>
   );
 }

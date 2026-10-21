@@ -1,12 +1,10 @@
 import { TMDBProvider } from "./tmdb.js";
 import { CineStreamProvider } from "./cinemeta.js";
-import { VegaMoviesProvider } from "./vegamovies.js";
 import { ProviderError } from "./base.js";
 
 const registry = new Map([
   ["TMDB", TMDBProvider],
-  ["CineStream", CineStreamProvider],
-  ["VegaMovies", VegaMoviesProvider]
+  ["CineStream", CineStreamProvider]
 ]);
 const telemetry = new Map();
 

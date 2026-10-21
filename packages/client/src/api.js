@@ -68,3 +68,86 @@ export function cleanupStream(sessionId) {
   if (!sessionId) return Promise.resolve(null);
   return request(`/api/stream/${encodeURIComponent(sessionId)}`, { method: "DELETE" }).catch(() => null);
 }
+
+export function fetchSearchSuggestions(q, options = {}) {
+  return request(`/api/search/suggestions?q=${encodeURIComponent(q)}`, options);
+}
+
+export function fetchRepository() {
+  return request("/api/extensions/repository");
+}
+
+export function setRepository(url) {
+  return request("/api/extensions/repository", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url })
+  });
+}
+
+export function removeRepository() {
+  return request("/api/extensions/repository", { method: "DELETE" });
+}
+
+export function fetchCatalog(refresh = false) {
+  return request(`/api/extensions/catalog${refresh ? "?refresh=true" : ""}`);
+}
+
+export function fetchInstalledExtensions() {
+  return request("/api/extensions/installed");
+}
+
+export function installExtension(id) {
+  return request("/api/extensions/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id })
+  });
+}
+
+export function uninstallExtension(id) {
+  return request("/api/extensions/uninstall", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id })
+  });
+}
+
+export function toggleExtension(id, enabled) {
+  return request("/api/extensions/toggle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, enabled })
+  });
+}
+
+export function toggleAllExtensions(enabled) {
+  return request("/api/extensions/toggle-all", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled })
+  });
+}
+
+export function fetchLogs(params = {}) {
+  const q = new URLSearchParams();
+  if (params.level) q.set("level", params.level);
+  if (params.search) q.set("search", params.search);
+  if (params.sinceId) q.set("sinceId", String(params.sinceId));
+  if (params.limit) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return request(`/api/extensions/logs${qs ? `?${qs}` : ""}`);
+}
+
+export function clearLogs() {
+  return request("/api/extensions/logs/clear", { method: "POST" });
+}
+
+export function postClientLog(entry) {
+  return request("/api/extensions/logs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(entry)
+  }).catch(() => null);
+}
+

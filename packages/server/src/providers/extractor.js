@@ -23,7 +23,8 @@ export function createResolver({
   providers = [],
   fixturePath = null,
   allowFixture = true,
-  retries = DEFAULT_RETRIES
+  retries = DEFAULT_RETRIES,
+  extensionManager = null
 } = {}) {
   const inFlight = new Map();
 
@@ -113,68 +114,74 @@ export function createResolver({
         };
       }
 
-      lastError = new ProviderError(
-        `${candidate.getName()} stream resolution is not implemented`,
-        "unsupported"
-      );
       noExtractor.push(candidate.getName());
     }
 
-    let bridgeAttempted = false;
-    let bridgeError = null;
-    if (resolvedDetail?.title) {
-      for (const bridge of providers) {
-        if (bridge.getName() === resolvedProviderName) continue;
-        if (typeof bridge.resolveByTitle !== "function") continue;
-        bridgeAttempted = true;
-        try {
-          logger.info("resolve.title_bridge", {
-            requestedProvider: resolvedProviderName,
-            bridgeProvider: bridge.getName(),
-            type: validType,
-            title: resolvedDetail.title,
-            year: resolvedDetail.year ?? null
-          });
-          const source = await bridge.resolveByTitle({
-            title: resolvedDetail.title,
-            year: resolvedDetail.year ?? null,
-            type: validType,
-            season,
-            episode,
-            isNative
-          });
+    // Delegate stream resolution to installed & enabled Streamix extensions
+    if (extensionManager && resolvedDetail?.title) {
+      try {
+        logger.info("resolve.extensions_query", {
+          title: resolvedDetail.title,
+          year: resolvedDetail.year ?? null,
+          type: validType,
+          season,
+          episode
+        });
+
+        const extResult = await extensionManager.resolveSources({
+          title: resolvedDetail.title,
+          year: resolvedDetail.year ?? null,
+          type: validType,
+          season,
+          episode,
+          tmdbId: resolvedDetail.tmdbId || (resolvedDetail.provider === "TMDB" ? resolvedDetail.id : null),
+          imdbId: resolvedDetail.imdbId || null
+        });
+
+        if (extResult && Array.isArray(extResult.sources) && extResult.sources.length > 0) {
+          const primarySource = extResult.sources[0];
           return {
-            provider: { name: bridge.getName(), resolution: "provider_stream" },
+            provider: {
+              name: extResult.provider.name,
+              id: extResult.provider.id,
+              version: extResult.provider.version,
+              resolution: "extension_stream"
+            },
             resolution: {
               status: "provider_stream",
-              attemptedProviders,
-              sourceType: source.sourceType ?? "provider",
-              requestedProvider: resolvedProviderName,
-              matchedBy: "title",
-              matchScore: source.matchScore ?? null,
-              quality: source.quality ?? null,
-              variantCount: source.variants?.length ?? 1,
-              matchesTried: source.attempts?.filter((attempt) => !attempt.ok).length ?? 0
+              attemptedProviders: [extResult.provider.name],
+              sourceType: primarySource.format || "stream",
+              quality: primarySource.quality || null,
+              variantCount: extResult.sources.length
             },
-            sourceUrl: source.url,
-            variants: source.variants ?? null,
-            headers: source.headers ?? {},
-            mediaType: source.mediaType ?? null,
-            episode: source.episode ?? null,
-            title: source.matchedTitle ?? resolvedDetail.title,
-            year: source.matchedYear ?? resolvedDetail.year ?? null,
-            note: source.note ?? null
-          };
-        } catch (err) {
-          lastError = err;
-          bridgeError = err;
-          logger.warn("resolve.title_bridge_failed", {
-            bridgeProvider: bridge.getName(),
+            sourceUrl: primarySource.url,
+            variants: extResult.sources.map((s) => ({
+              url: s.url,
+              quality: s.quality || (s.height ? `${s.height}p` : null),
+              height: s.height || (s.quality ? parseInt(s.quality, 10) || null : null),
+              format: s.format,
+              headers: s.headers || primarySource.headers || {}
+            })),
+            subtitles: extResult.subtitles || [],
+            headers: primarySource.headers || {},
+            mediaType:
+              primarySource.format === "hls" || primarySource.url?.includes(".m3u8")
+                ? "hls"
+                : (primarySource.format || "mp4"),
+            episode,
             title: resolvedDetail.title,
-            code: err.code ?? "error",
-            reason: String(err.message ?? "").slice(0, 200)
-          });
+            year: resolvedDetail.year ?? null,
+            note: `Resolved via ${extResult.provider.name} extension`
+          };
         }
+      } catch (err) {
+        lastError = err;
+        logger.warn("resolve.extension_failed", {
+          title: resolvedDetail.title,
+          code: err.code ?? "error",
+          reason: String(err.message ?? "").slice(0, 200)
+        });
+        throw new ProviderError(err.message, "not_found", err);
       }
     }
 
@@ -198,9 +205,7 @@ export function createResolver({
 
     if (noExtractor.length > 0) {
       throw new ProviderError(
-        `No real stream source is available for this title (no supported extractor in: ${noExtractor.join(", ")}${
-          bridgeAttempted ? `; title-based lookup failed: ${String(bridgeError?.message ?? "no playable match").slice(0, 160)}` : ""
-        }).`,
+        `No real stream source is available for '${resolvedDetail?.title || validId}'. Please check Settings -> Extensions to ensure a compatible provider extension is installed and enabled.`,
         "unsupported"
       );
     }

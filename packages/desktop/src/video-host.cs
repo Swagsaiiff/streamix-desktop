@@ -41,6 +41,9 @@ namespace Streamix
         static extern bool GetCursorPos(out POINT lpPoint);
 
         [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll")]
         static extern bool IsWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
@@ -205,6 +208,7 @@ namespace Streamix
         static long lastMouseMoveTime = 0;
         static int lastGlobalMouseX = -99999;
         static int lastGlobalMouseY = -99999;
+        static bool lastLButtonDown = false;
 
         class CreateParams
         {
@@ -358,6 +362,47 @@ namespace Streamix
                     if (msg.message == WM_TIMER)
                     {
                         UpdateScreenPosition(false);
+
+                        if (currentHwnd != IntPtr.Zero && IsWindow(currentHwnd) && IsWindowVisible(currentHwnd))
+                        {
+                            POINT curPt;
+                            if (GetCursorPos(out curPt))
+                            {
+                                bool isInside = curPt.X >= lastScreenX && curPt.X <= lastScreenX + lastTargetW &&
+                                                curPt.Y >= lastScreenY && curPt.Y <= lastScreenY + lastTargetH;
+                                if (isInside)
+                                {
+                                    int dx = Math.Abs(curPt.X - lastGlobalMouseX);
+                                    int dy = Math.Abs(curPt.Y - lastGlobalMouseY);
+                                    if (dx >= 2 || dy >= 2)
+                                    {
+                                        lastGlobalMouseX = curPt.X;
+                                        lastGlobalMouseY = curPt.Y;
+                                        long now = DateTime.UtcNow.Ticks / 10000;
+                                        if (now - lastMouseMoveTime > 100)
+                                        {
+                                            lastMouseMoveTime = now;
+                                            SendResponse("{\"event\":\"mousemove\"}");
+                                        }
+                                    }
+
+                                    bool isLDown = (GetAsyncKeyState(0x01) & 0x8000) != 0;
+                                    if (isLDown && !lastLButtonDown)
+                                    {
+                                        if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                                        {
+                                            SetFocus(ownerHwnd);
+                                        }
+                                        SendResponse("{\"event\":\"click\"}");
+                                    }
+                                    lastLButtonDown = isLDown;
+                                }
+                                else
+                                {
+                                    lastLButtonDown = false;
+                                }
+                            }
+                        }
                     }
                     else if (msg.message == WM_USER_CREATE && pendingCreate != null)
                     {

@@ -16,16 +16,16 @@ function item(overrides) {
 test("mergeSearchResults keeps results from every provider without dropping slower ones", () => {
   const merged = mergeSearchResults([
     { provider: "CineStream", items: [item({ id: "tt1", title: "Alpha", year: 2001 })] },
-    { provider: "VegaMovies", items: [item({ id: "/beta/", title: "Beta", year: 2020, provider: "VegaMovies" })] }
+    { provider: "ProviderB", items: [item({ id: "/beta/", title: "Beta", year: 2020, provider: "ProviderB" })] }
   ]);
   assert.equal(merged.length, 2);
-  assert.deepEqual(merged.map((i) => i.provider).sort(), ["CineStream", "VegaMovies"]);
+  assert.deepEqual(merged.map((i) => i.provider).sort(), ["CineStream", "ProviderB"]);
 });
 
 test("mergeSearchResults dedupes identical titles from different providers", () => {
   const merged = mergeSearchResults([
     { provider: "CineStream", items: [item({ id: "tt1", title: "Beast of War", year: 2025 })] },
-    { provider: "VegaMovies", items: [item({ id: "/beast/", title: "Beast of War", year: 2025, provider: "VegaMovies" })] }
+    { provider: "ProviderB", items: [item({ id: "/beast/", title: "Beast of War", year: 2025, provider: "ProviderB" })] }
   ]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].provider, "CineStream");
@@ -34,7 +34,7 @@ test("mergeSearchResults dedupes identical titles from different providers", () 
 test("mergeSearchResults keeps different years (remakes) as separate titles", () => {
   const merged = mergeSearchResults([
     { provider: "CineStream", items: [item({ id: "tt-old", title: "Dune", year: 1984 })] },
-    { provider: "VegaMovies", items: [item({ id: "/dune-2021/", title: "Dune", year: 2021, provider: "VegaMovies" })] }
+    { provider: "ProviderB", items: [item({ id: "/dune-2021/", title: "Dune", year: 2021, provider: "ProviderB" })] }
   ]);
   assert.equal(merged.length, 2);
 });
@@ -50,7 +50,7 @@ test("mergeSearchResults does not merge a movie with a series of the same name",
 test("mergeSearchResults normalizes punctuation and case for dedupe", () => {
   const merged = mergeSearchResults([
     { provider: "CineStream", items: [item({ id: "a", title: "Spider-Man: No Way Home", year: 2021 })] },
-    { provider: "VegaMovies", items: [item({ id: "b", title: "Spider Man No Way Home", year: 2021, provider: "VegaMovies" })] }
+    { provider: "ProviderB", items: [item({ id: "b", title: "Spider Man No Way Home", year: 2021, provider: "ProviderB" })] }
   ]);
   assert.equal(merged.length, 1);
 });

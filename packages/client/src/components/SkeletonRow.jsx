@@ -1,4 +1,4 @@
-export default function SkeletonRow({ count = 6 }) {
+export default function SkeletonRow({ count = 8 }) {
   return (
     <section className="row" aria-hidden="true">
       <div className="skeleton skeleton-title" />

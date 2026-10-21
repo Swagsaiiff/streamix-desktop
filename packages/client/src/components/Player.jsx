@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { createStream, cleanupStream, createLazyHlsSession } from "../api.js";
+import { createStream, cleanupStream, createLazyHlsSession, postClientLog } from "../api.js";
 import { audioTrackLabel } from "../lib/languages.js";
 import {
   AUTO_QUALITY,
@@ -125,6 +125,7 @@ export default function Player({ item, onClose, onProgress }) {
   const playingRef = useRef(playing);
   const lastHideTimeRef = useRef(0);
   const lastMousePosRef = useRef({ x: -1, y: -1 });
+  const isHoveringControlsRef = useRef(false);
 
   useEffect(() => {
     playingRef.current = playing;
@@ -134,7 +135,7 @@ export default function Player({ item, onClose, onProgress }) {
     setControlsVisible(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     hideTimerRef.current = setTimeout(() => {
-      if (playingRef.current) {
+      if (playingRef.current && !isHoveringControlsRef.current) {
         lastHideTimeRef.current = Date.now();
         setControlsVisible(false);
       }
@@ -142,15 +143,26 @@ export default function Player({ item, onClose, onProgress }) {
   }, []);
 
   const handleMouseMove = useCallback((e) => {
-    if (Date.now() - lastHideTimeRef.current < 400) return;
-    const x = e.screenX ?? e.clientX;
-    const y = e.screenY ?? e.clientY;
+    const x = e.screenX ?? e.clientX ?? 0;
+    const y = e.screenY ?? e.clientY ?? 0;
     const dx = Math.abs(x - lastMousePosRef.current.x);
     const dy = Math.abs(y - lastMousePosRef.current.y);
-    if (dx < 4 && dy < 4) return;
+    if (dx === 0 && dy === 0) return;
+    const minDelta = controlsVisible ? 2 : 1;
+    if (dx < minDelta && dy < minDelta) return;
     lastMousePosRef.current = { x, y };
     bumpControls();
-  }, [bumpControls]);
+  }, [bumpControls, controlsVisible]);
+
+  useEffect(() => {
+    const onWindowMove = (e) => {
+      handleMouseMove(e);
+    };
+    window.addEventListener("mousemove", onWindowMove, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", onWindowMove);
+    };
+  }, [handleMouseMove]);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,6 +202,7 @@ export default function Player({ item, onClose, onProgress }) {
         setSourceNote(stream.note ?? null);
         setSourceStatus(stream.resolution?.status ?? null);
         setSourceProvider(stream.provider?.name ?? null);
+        postClientLog({ level: "INFO", component: "playback", stage: "source_handoff", message: `Stream resolved for "${playItem.title || playItem.id}" via ${stream.provider?.name || "extension"}` });
 
         // Resume handling
         const saved = playItem.restart ? null : progressStore.get({
@@ -888,7 +901,6 @@ export default function Player({ item, onClose, onProgress }) {
       bumpControls();
     });
     const unMove = adapter.on("videomousemove", () => {
-      if (Date.now() - lastHideTimeRef.current < 400) return;
       containerRef.current?.focus();
       window.focus();
       bumpControls();
@@ -999,7 +1011,18 @@ export default function Player({ item, onClose, onProgress }) {
 
       {(phase === "ready" || controlsVisible) && (
         <>
-          <div className="player-top" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="player-top"
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => {
+              isHoveringControlsRef.current = true;
+              bumpControls();
+            }}
+            onMouseLeave={() => {
+              isHoveringControlsRef.current = false;
+              bumpControls();
+            }}
+          >
             <button type="button" className="player-btn player-back" onClick={handleBack} aria-label="Back to details">
               ‹ Back
             </button>
@@ -1046,7 +1069,18 @@ export default function Player({ item, onClose, onProgress }) {
             </div>
           )}
 
-          <div className="player-bottom" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="player-bottom"
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => {
+              isHoveringControlsRef.current = true;
+              bumpControls();
+            }}
+            onMouseLeave={() => {
+              isHoveringControlsRef.current = false;
+              bumpControls();
+            }}
+          >
             <div className="player-timeline">
               <input
                 type="range"
