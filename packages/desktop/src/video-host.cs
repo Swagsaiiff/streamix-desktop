@@ -26,6 +26,12 @@ namespace Streamix
         static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [DllImport("user32.dll")]
+        static extern IntPtr SetFocus(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
         static extern IntPtr DefWindowProc(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
@@ -155,6 +161,16 @@ namespace Streamix
         const uint WM_LBUTTONDOWN = 0x0201;
         const uint WM_LBUTTONDBLCLK = 0x0203;
 
+        const uint WM_SETFOCUS = 0x0007;
+        const uint WM_MOUSEACTIVATE = 0x0021;
+        const int MA_NOACTIVATE = 3;
+
+        const uint WM_KEYDOWN = 0x0100;
+        const uint WM_KEYUP = 0x0101;
+        const uint WM_CHAR = 0x0102;
+        const uint WM_SYSKEYDOWN = 0x0104;
+        const uint WM_SYSKEYUP = 0x0105;
+
         const uint WM_USER = 0x0400;
         const uint WM_USER_CREATE = WM_USER + 1;
         const uint WM_USER_BOUNDS = WM_USER + 2;
@@ -248,10 +264,40 @@ namespace Streamix
                     IntPtr hdc = BeginPaint(hWnd, out ps);
                     EndPaint(hWnd, ref ps);
                     return IntPtr.Zero;
+                case WM_MOUSEACTIVATE:
+                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                    {
+                        SetFocus(ownerHwnd);
+                    }
+                    return new IntPtr(MA_NOACTIVATE);
+                case WM_SETFOCUS:
+                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                    {
+                        SetFocus(ownerHwnd);
+                    }
+                    return IntPtr.Zero;
+                case WM_KEYDOWN:
+                case WM_SYSKEYDOWN:
+                case WM_KEYUP:
+                case WM_SYSKEYUP:
+                case WM_CHAR:
+                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                    {
+                        PostMessage(ownerHwnd, msg, wParam, lParam);
+                    }
+                    return IntPtr.Zero;
                 case WM_LBUTTONDOWN:
+                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                    {
+                        SetFocus(ownerHwnd);
+                    }
                     SendResponse("{\"event\":\"click\"}");
                     return IntPtr.Zero;
                 case WM_LBUTTONDBLCLK:
+                    if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                    {
+                        SetFocus(ownerHwnd);
+                    }
                     SendResponse("{\"event\":\"dblclick\"}");
                     return IntPtr.Zero;
                 case WM_MOUSEMOVE:

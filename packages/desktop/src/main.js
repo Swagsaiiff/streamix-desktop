@@ -61,6 +61,11 @@ mpv.onEvent = (type, data) => {
 
 videoHost.onEvent = (type, data) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
+    if (type === "click" || type === "dblclick") {
+      try {
+        mainWindow.focus();
+      } catch {}
+    }
     mainWindow.webContents.send("mpv:event", { type: "video-" + type, data });
   }
 };
@@ -71,7 +76,7 @@ ipcMain.handle("mpv:start", async (_event, sourceUrl, options = {}) => {
     if (mainWindow && !mainWindow.isDestroyed() && !options.wid) {
       const handleBuffer = mainWindow.getNativeWindowHandle();
       const parentHwnd = process.arch === "x64" ? handleBuffer.readBigUInt64LE(0) : handleBuffer.readUInt32LE(0);
-      const bounds = options.bounds || { x: 0, y: 56, width: 1280, height: 648 };
+      const bounds = options.bounds || { x: 0, y: 0, width: 1280, height: 800 };
       const childHwnd = await videoHost.createHost(parentHwnd.toString(), bounds);
       options.wid = childHwnd.toString();
     }

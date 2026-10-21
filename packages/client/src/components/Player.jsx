@@ -319,7 +319,7 @@ export default function Player({ item, onClose, onProgress }) {
             : null;
 
           const computeBounds = () => {
-            if (!canvasRef.current) return { x: 0, y: 56, width: 1280, height: 648 };
+            if (!canvasRef.current) return { x: 0, y: 0, width: 1280, height: 800 };
             const rect = canvasRef.current.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
             return {
@@ -756,6 +756,11 @@ export default function Player({ item, onClose, onProgress }) {
     if (switching) setSwitching(false);
   }, [current, switching]);
 
+  useEffect(() => {
+    containerRef.current?.focus();
+    window.focus();
+  }, []);
+
   const handleBack = useCallback(() => {
     if (isDesktop && mpvAdapterRef.current) {
       try {
@@ -776,19 +781,75 @@ export default function Player({ item, onClose, onProgress }) {
       }
       if (isEditableTarget(e.target)) return;
       const tag = e.target instanceof HTMLElement ? e.target.tagName : "";
-      if ((e.code === "Space" || e.key.toLowerCase() === "k") && tag !== "BUTTON") {
+      const keyLower = e.key ? e.key.toLowerCase() : "";
+
+      if (e.code === "Space" || e.key === " " || keyLower === "k") {
         e.preventDefault();
+        if (tag === "BUTTON") {
+          e.target.blur();
+        }
         togglePlay();
+        bumpControls();
+        return;
       }
-      if (e.key === "ArrowLeft") skip(-10);
-      if (e.key === "ArrowRight") skip(10);
-      if (e.key.toLowerCase() === "m") toggleMute();
-      if (e.key.toLowerCase() === "f") toggleFullscreen();
+      if (e.key === "ArrowLeft" || keyLower === "j") {
+        e.preventDefault();
+        skip(-10);
+        bumpControls();
+        return;
+      }
+      if (e.key === "ArrowRight" || keyLower === "l") {
+        e.preventDefault();
+        skip(10);
+        bumpControls();
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setVolume((v) => {
+          const next = Math.min(1, Math.round((v + 0.05) * 100) / 100);
+          if (isDesktop && mpvAdapterRef.current) mpvAdapterRef.current.setVolume(next);
+          return next;
+        });
+        bumpControls();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setVolume((v) => {
+          const next = Math.max(0, Math.round((v - 0.05) * 100) / 100);
+          if (isDesktop && mpvAdapterRef.current) mpvAdapterRef.current.setVolume(next);
+          return next;
+        });
+        bumpControls();
+        return;
+      }
+      if (keyLower === "m") {
+        e.preventDefault();
+        toggleMute();
+        bumpControls();
+        return;
+      }
+      if (keyLower === "f") {
+        e.preventDefault();
+        toggleFullscreen();
+        bumpControls();
+        return;
+      }
+      if (e.key >= "0" && e.key <= "9" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        const pct = (Number(e.key) * 10) / 100;
+        if (duration > 0) {
+          seek(duration * pct);
+        }
+        bumpControls();
+        return;
+      }
       bumpControls();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleBack, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls]);
+  }, [handleBack, togglePlay, skip, toggleMute, toggleFullscreen, bumpControls, duration, seek, isDesktop]);
 
   useEffect(() => {
     bumpControls();
@@ -800,9 +861,24 @@ export default function Player({ item, onClose, onProgress }) {
   useEffect(() => {
     if (!isDesktop || !mpvAdapterRef.current) return;
     const adapter = mpvAdapterRef.current;
-    const unClick = adapter.on("videoclick", () => togglePlay());
-    const unDbl = adapter.on("videodblclick", () => toggleFullscreen());
-    const unMove = adapter.on("videomousemove", () => { if (Date.now() - lastHideTimeRef.current < 400) return; bumpControls(); });
+    const unClick = adapter.on("videoclick", () => {
+      containerRef.current?.focus();
+      window.focus();
+      togglePlay();
+      bumpControls();
+    });
+    const unDbl = adapter.on("videodblclick", () => {
+      containerRef.current?.focus();
+      window.focus();
+      toggleFullscreen();
+      bumpControls();
+    });
+    const unMove = adapter.on("videomousemove", () => {
+      if (Date.now() - lastHideTimeRef.current < 400) return;
+      containerRef.current?.focus();
+      window.focus();
+      bumpControls();
+    });
     return () => {
       unClick?.();
       unDbl?.();
@@ -864,6 +940,7 @@ export default function Player({ item, onClose, onProgress }) {
     <div
       className={`player ${controlsVisible ? "controls-visible" : "controls-hidden"}`}
       ref={containerRef}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
       aria-label={`Playing ${displayTitle}`}

@@ -697,6 +697,10 @@ body {
 }
 
 
+.player:focus {
+  outline: none;
+}
+
 .player {
   position: fixed;
   inset: 0;
@@ -713,27 +717,20 @@ body {
 
 
 
+/* Player canvas maintains constant full dimensions without layout shift */
 .player-desktop-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
   background: #000;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.player.controls-visible .player-desktop-canvas {
-  top: 56px;
-  bottom: 96px;
-  height: calc(100% - 152px);
-}
-
-.player.controls-hidden .player-desktop-canvas {
-  top: 0;
-  bottom: 0;
-  height: 100%;
 }
 
 .player-desktop-badge {
