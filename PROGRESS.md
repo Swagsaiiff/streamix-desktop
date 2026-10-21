@@ -1,3 +1,98 @@
+## Streamix Extension Lab: Independent Native Desktop Ecosystem Refactoring (COMPLETED)
+
+### Objective
+Refactor `streamix-extension-lab/` into a fully independent Streamix Desktop extension ecosystem, removing the Android/Kotlin/Gradle `cloudstream-compatible/` subproject, CloudStream-specific packaging/publishing instructions, and unverified embed URL fallbacks, while preserving accurate upstream author attribution and establishing strict native Streamix Desktop stream validation.
+
+### Summary of Completed Deliverables
+1. **Removed CloudStream Android Subproject:**
+   - Deleted `streamix-extension-lab/cloudstream-compatible/` completely (including all Android/Kotlin Gradle modules for Bollyflix, CineStream, MoviesDrive, Moviesmod, VegaMovies, Gradle wrappers, `.cs3` build outputs, and `.github/workflows/build-cloudstream.yml`).
+   - Removed `verify:cloudstream` and related npm scripts from `package.json`.
+   - Updated `npm run check` to execute only native Streamix SDK type checking, test suites, packaging, and repository generation.
+
+2. **Corrected Manifests & Repository Metadata:**
+   - Updated `homepageUrl`, `repositoryUrl`, and `author.url` across `examples/sample-provider/manifest.json`, `packages/*/manifest.json`, `tools/repo-builder.ts`, `repository/repository.json`, and `repository/plugins.json` to point to `https://github.com/Swagsaiiff/streamix-extension-lab`.
+   - Preserved accurate GPLv3 author attribution (`megix / Streamix Team`, Saurabh Kaperwan) without operational coupling.
+
+3. **Enforced Honest Stream Resolution (No Embed Fallbacks):**
+   - Added `isVideoStreamUrl(url: string)` utility to SDK (`sdk/src/extractors/html.ts`) ensuring HTML web pages, ad redirectors, and embed URLs are never treated as direct video sources.
+   - Refactored `CineStream` (`packages/cinestream/src/index.ts`): removed the fake embed URL fallback (`vidsrc.me/embed/...`) that previously claimed embed pages were direct HLS streams. Now correctly throws `SourceUnavailableError` when direct video streams cannot be extracted. Added test verification for this error behavior.
+   - Applied `isVideoStreamUrl` checks to `bollyflix`, `moviesdrive`, `moviesmod`, and `vegamovies` stream resolvers.
+
+4. **Updated Documentation & Verification Tables:**
+   - Updated `README.md`, `docs/EXTENSION_GUIDE.md`, and `docs/SECURITY_AND_EXECUTION_MODEL.md` to remove all `.cs3`, Gradle, and CloudStream app installation instructions.
+   - Replaced unverified "Live tested" claims in documentation tables with honest status reporting: "TypeScript build & fixtures passed; direct streams only; live extraction unverified".
+
+5. **Regenerated Packages & Repository Index:**
+   - Rebuilt all 6 `.streamix-ext` packages (`sample`, `bollyflix`, `cinestream`, `moviesdrive`, `moviesmod`, `vegamovies`) and synced to `repository/packages/`.
+   - Regenerated `repository/plugins.json` and `repository/repository.json` with updated SHA-256 hashes and file sizes.
+
+### Verification Results
+- **TypeScript Type Checking:** `npm run build:sdk` -> `tsc --noEmit` exited 0.
+- **Automated Test Suite:** `npm test` -> 57/57 tests passing across 5 suites (including new CineStream embed rejection test) in 854ms.
+- **Full Verification Pipeline:** `npm run check` -> built SDK, passed all 57 tests, packaged all 6 extensions into `.streamix-ext`, and regenerated repository index cleanly with exit code 0.
+- **Repository Audit:** Grep search confirmed zero `.cs3`, zero Gradle wrappers, zero Android build files, and zero runtime CloudStream dependencies.
+- **Git Push:** Committed (`f40a7ac`) and pushed to `https://github.com/Swagsaiiff/streamix-extension-lab` on `main`.
+
+---
+
+## Streamix Extension Lab: Port All CSX Providers to Native Streamix Extension System (COMPLETED)
+
+### Objective
+Port all provider implementations published in the CSX repository (`Bollyflix`, `CineStream`, `MoviesDrive`, `Moviesmod`, `VegaMovies`) into the independent, native TypeScript Streamix extension ecosystem inside `streamix-extension-lab/`.
+
+### Summary of Completed Deliverables
+1. **Isolated Ecosystem Architecture (`streamix-extension-lab/`):**
+   - Strictly isolated inside `streamix-extension-lab/`. Zero modifications made to root Streamix desktop application, existing providers, or dependencies.
+   - Built 5 distinct native Streamix extension packages conforming to `StreamixExtension` TypeScript SDK and `schemas/extension-manifest.schema.json`.
+
+2. **Ported Native Provider Packages (`packages/`):**
+   - **`packages/bollyflix/` (`org.streamix.provider.bollyflix` v1.0.0)**:
+     - Upstream source: `com.megix.BollyflixProvider` (GPLv3).
+     - Capabilities: Dynamic domain resolution (`urls.json`), search parsing from `<article>` cards, Cinemeta IMDb metadata enrichment, multi-season & episode parsing, Sidexfee bypass (`web.sidexfee.com`), GDFlix / FastDL multi-server stream extraction.
+   - **`packages/cinestream/` (`org.streamix.provider.cinestream` v1.0.0)**:
+     - Upstream source: `com.megix.CineStreamProvider` (GPLv3).
+     - Capabilities: Cinemeta & Stremio movie & series catalog search, rich metadata with posters/backdrops/genres/IMDb rating, full season & episode breakdown, multi-source stream resolution.
+   - **`packages/moviesdrive/` (`org.streamix.provider.moviesdrive` v1.0.0)**:
+     - Upstream source: `com.megix.MoviesDriveProvider` (GPLv3).
+     - Capabilities: Direct JSON search (`/search.php?q=`) with TMDB thumbnails and IMDb ID mapping, Cinemeta metadata enrichment, HubCloud and GDFlix multi-server extraction (`extractDoubleAtob`, Pixeldrain, FSL Server, BuzzServer, Cloud download).
+   - **`packages/moviesmod/` (`org.streamix.provider.moviesmod` v1.0.0)**:
+     - Upstream source: `com.megix.MoviesmodProvider` (GPLv3).
+     - Capabilities: Article card search parsing, Cinemeta metadata integration, base64 URL redirect decoding, Driveleech / Driveseed / GDFlix multi-server stream extraction.
+   - **`packages/vegamovies/` (`org.streamix.provider.vegamovies` v1.0.0)**:
+     - Upstream source: `com.megix.VegaMoviesProvider` (GPLv3).
+     - Capabilities: Dual search pipeline (JSON hits API with fallback to `/?s=` HTML search), Cinemeta metadata enrichment, V-Cloud / HubCloud / GDFlix multi-server stream extraction.
+
+3. **Shared SDK Extractor Library (`sdk/src/extractors/`):**
+   - `urls.ts`: Dynamic mirror URL resolver with in-memory caching and fallback domains.
+   - `html.ts`: Zero-dependency HTML parsing helpers (tags, attributes, text extraction, IMDb ID extractor, quality parser).
+   - `cinemeta.ts`: Stremio Cinemeta metadata client for movies and series.
+   - `hubcloud.ts`: HubCloud and V-Cloud link extractor.
+   - `gdflix.ts`: GDFlix, FastDL, and Sidexfee bypass extractor.
+   - `driveleech.ts`: Driveleech, Driveseed, and base64 URL parameter decoder.
+
+4. **Native Streamix Repository Generation (`repository/`):**
+   - Built all 5 provider packages + reference sample package into `.streamix-ext` distribution archives.
+   - Generated `repository/plugins.json` and `repository/repository.json` with cryptographic SHA-256 hashes, exact byte sizes, versions, permissions, and download URLs.
+   - Verified 100% schema compliance against `schemas/repository-index.schema.json`.
+
+5. **Licensing and Upstream Attribution:**
+   - Documented original author (`megix` / Saurabh Kaperwan) and preserved GNU General Public License v3.0 notices in all package manifests, source files, and READMEs.
+
+### Verification Results
+- **Type Checking:** `npm run build:sdk` -> `tsc --noEmit` exited 0.
+- **Automated Test Suite:** `npm test` -> 56/56 tests passing (5 suites, 56 test cases) in 820ms:
+  - `SampleProviderExtension`: 10/10 passing
+  - `BollyflixExtension`: 4/4 passing
+  - `CineStreamExtension`: 5/5 passing
+  - `MoviesDriveExtension`: 4/4 passing
+  - `MoviesmodExtension`: 4/4 passing
+  - `VegaMoviesExtension`: 4/4 passing
+  - Core SDK (manifest validation, API compatibility, normalized models, errors, timeouts, packager integrity, repo index): 25/25 passing
+- **Full Verification Pipeline:** `npm run check` -> build, test, package all 6 extensions, and CloudStream verification all succeeded with 0 errors.
+- **Git Push:** Committed (`a9b9913`) and pushed to `https://github.com/Swagsaiiff/streamix-extension-lab` on `main`.
+
+---
+
 ## TMDB Homepage Catalog Integration (COMPLETED)
 
 ### Objective
@@ -788,3 +883,107 @@ Fix the issue where STREAMIX Desktop player controls fail to hide automatically 
 - **Video Host Lifecycle Verification**: Executed automated verification testing `CREATE`, `BOUNDS`, `DESTROY`, and process stop -> verified `currentHwnd: null` after destroy and clean process termination.
 - **Installer Build**: `npm run package:desktop` -> built `STREAMIX Setup 1.0.7.exe` (129 MB) and updated mirror `setup.exe`.
 - **GitHub Releases Asset Verification**: Checked assets for all tags via `gh release view` -> confirmed 123 MB setup installer attached to every release from `v1.0.0` to `v1.0.7`.
+
+---
+
+## Standalone Extension Development Project (`streamix-extension-lab`)
+
+### Objective
+Create a standalone, isolated extension development project and native TypeScript SDK inside `streamix-extension-lab/` to establish a modular extension ecosystem for Streamix Desktop without modifying existing application source files or provider implementations.
+
+### Files Created
+- `streamix-extension-lab/package.json`: Standalone npm configuration with isolated devDependencies (`typescript`, `@types/node`) and scripts.
+- `streamix-extension-lab/tsconfig.json`: TypeScript configuration with `NodeNext` resolution and strict checking.
+- `streamix-extension-lab/.gitignore`: Ignores `node_modules/`, `temp-*/`, and log files.
+- `streamix-extension-lab/README.md`: Architectural overview, developer guide, and quick start documentation.
+- `streamix-extension-lab/schemas/extension-manifest.schema.json`: JSON schema specification for Streamix extension manifests.
+- `streamix-extension-lab/schemas/repository-index.schema.json`: JSON schema specification for community extension repositories (`plugins.json`).
+- `streamix-extension-lab/sdk/src/types.ts`: Normalized TypeScript models (`StreamixExtension`, `ExtensionContext`, `MediaDetails`, `SearchResultItem`, `ResolvedSourceResult`, `VideoSource`, `SubtitleItem`).
+- `streamix-extension-lab/sdk/src/constants.ts`: SDK API version (`1.0.0`), supported content types, video formats, qualities, and regex patterns.
+- `streamix-extension-lab/sdk/src/errors.ts`: Standardized error hierarchy (`ExtensionError`, `ManifestValidationError`, `ApiVersionMismatchError`, `ItemNotFoundError`, `SourceUnavailableError`, `ExtensionTimeoutError`, `PermissionDeniedError`, `PackageIntegrityError`).
+- `streamix-extension-lab/sdk/src/validator.ts`: Validation utilities for manifests, SemVer compatibility ranges (`^`, `~`, exact), search items, details, and source payloads.
+- `streamix-extension-lab/sdk/src/context.ts`: `ExtensionContext` factory enforcing declared permissions (`network:fetch`, `storage:local`) and providing scoped logging.
+- `streamix-extension-lab/sdk/src/runner.ts`: Execution runner managing timeouts, cancellation (`AbortSignal`), and result normalization.
+- `streamix-extension-lab/sdk/src/manifest.ts`: Manifest loading, parsing, and validation helpers.
+- `streamix-extension-lab/sdk/src/index.ts`: Public SDK entrypoint.
+- `streamix-extension-lab/examples/sample-provider/manifest.json`: Sample extension manifest for `org.streamix.provider.sample`.
+- `streamix-extension-lab/examples/sample-provider/package.json` & `tsconfig.json`: Isolated sample extension project setup.
+- `streamix-extension-lab/examples/sample-provider/src/fixtures.ts`: Legitimate open-content media fixtures (Blender Foundation films with genuine HLS/MP4 test streams and VTT subtitles).
+- `streamix-extension-lab/examples/sample-provider/src/index.ts`: Reference `StreamixExtension` implementation.
+- `streamix-extension-lab/examples/sample-provider/tests/sample-provider.test.ts`: Provider operations unit tests.
+- `streamix-extension-lab/tools/validator-cli.ts`: CLI tool to validate extension manifests and host API compatibility.
+- `streamix-extension-lab/tools/packager.ts`: Zero-dependency ZIP packager/unpacker generating `.streamix-ext` archives and SHA-256 hashes.
+- `streamix-extension-lab/tools/repo-builder.ts`: Repository builder generating `plugins.json` with cryptographic integrity checksums.
+- `streamix-extension-lab/tools/harness.ts`: Standalone development harness exercising extensions end-to-end without UI or Electron.
+- `streamix-extension-lab/repository/repository.json` & `plugins.json`: Sample local repository index referencing the built sample package.
+- `streamix-extension-lab/packages/org.streamix.provider.sample-1.0.0.streamix-ext`: Pre-built sample extension package with verified SHA-256.
+- `streamix-extension-lab/docs/EXTENSION_GUIDE.md`: Developer guide for authoring new extensions.
+- `streamix-extension-lab/docs/SECURITY_AND_EXECUTION_MODEL.md`: Security threat model, sandboxing boundaries, and production isolation roadmap.
+- `streamix-extension-lab/docs/STREAMIX_INTEGRATION_SPEC.md`: Technical specification for future integration into Streamix Desktop.
+- `streamix-extension-lab/tests/manifest-validation.test.ts`: Automated tests for manifest schema validation.
+- `streamix-extension-lab/tests/api-compatibility.test.ts`: Automated tests for SemVer version compatibility checking.
+- `streamix-extension-lab/tests/normalized-models.test.ts`: Automated tests for data normalization and invalid format rejections.
+- `streamix-extension-lab/tests/error-and-timeout.test.ts`: Automated tests for timeouts, abort signals, and permission enforcement.
+- `streamix-extension-lab/tests/packager-and-integrity.test.ts`: Automated tests for ZIP packaging, SHA-256 integrity, and tamper detection.
+- `streamix-extension-lab/tests/repository-index.test.ts`: Automated tests for repository indexing and schema validation.
+
+### Verification Performed
+1. `npm run build:sdk` (inside `streamix-extension-lab/`) -> `tsc --noEmit` exited with code 0 (zero type errors).
+2. `npm run validate:manifest` -> Verified `examples/sample-provider/manifest.json` against schema and host API v1.0.0.
+3. `npm run package:sample` -> Generated `packages/org.streamix.provider.sample-1.0.0.streamix-ext` (3,734 bytes, SHA-256 `245d10f2de319701a29bc4be0999c5a049b5933671cf8009bd663d586b4cdfe6`).
+4. `npm run build:repo` -> Built local repository index `repository/plugins.json` with verified SHA-256 and metadata.
+5. `npm run harness` -> Development harness executed: initialized extension, searched ("bunny"), fetched details, resolved HLS streams and VTT subtitles, exercised error handling for missing item, and cleanly disposed.
+6. `npm test` -> 35/35 automated unit and integration tests passed in 683ms.
+7. `npm run test:client` (from repository root) -> 34/34 client tests passed.
+8. `npm run build` (from repository root) -> Client Vite production build completed in 246ms.
+9. **Zero Application Files Modified**: No application code in `packages/`, no root dependencies, and no existing providers were modified.
+
+---
+
+## CloudStream Provider Migration & Single-URL Repository
+
+### Objective
+Migrate all 5 CloudStream provider modules from the upstream CSX repository (`Bollyflix`, `CineStream`, `MoviesDrive`, `Moviesmod`, `VegaMovies`) into an isolated `cloudstream-compatible/` subproject in `streamix-extension-lab/`, verify `.cs3` package integrity, establish an automated GitHub Actions build workflow, and publish a single-URL CloudStream repository on the `builds` branch.
+
+### Files Created/Updated
+- `streamix-extension-lab/cloudstream-compatible/`: Dedicated subproject containing:
+  - `Bollyflix/`: Gradle module, icon, manifest, and Kotlin provider code (`Bollyflix.kt`, `BollyflixProvider.kt`, `Extractors.kt`).
+  - `CineStream/`: Gradle module, icon, manifest, and Kotlin provider code (`CineStreamProvider.kt`, `CineSimklProvider.kt`, `CineTmdbProvider.kt`, etc.).
+  - `MoviesDrive/`: Gradle module, icon, manifest, and Kotlin provider code (`MoviesDrive.kt`, `MoviesDriveProvider.kt`, `Extractors.kt`).
+  - `Moviesmod/`: Gradle module, icon, manifest, and Kotlin provider code (`Moviesmod.kt`, `MoviesmodProvider.kt`, `TopMoviesProvider.kt`).
+  - `VegaMovies/`: Gradle module, icon, manifest, and Kotlin provider code (`VegaMovies.kt`, `VegaMoviesProvider.kt`, `RogmoviesProvider.kt`).
+  - `build.gradle.kts`: Configures CloudStream gradle plugin, SDK compile target (36), JVM 1.8 target, and default repo URL (`https://github.com/Swagsaiiff/streamix-extension-lab`).
+  - `settings.gradle.kts`: Includes all 5 provider modules.
+  - `gradle.properties`: JVM arguments and Android flags.
+  - `gradlew` & `gradlew.bat`: Official Gradle wrapper scripts.
+  - `gradle/wrapper/gradle-wrapper.jar` & `properties`: Gradle distribution configuration.
+  - `LICENSE`: Full GNU General Public License v3.0 (GPLv3) preserving upstream attribution to `megix` / Saurabh Kaperwan.
+  - `README.md`: Upstream provenance, provider inventory, single-URL repository instructions, and build guide.
+  - `builds/`: Staged distribution directory containing `repo.json`, `CS.json`, `plugins.json`, and all 5 `.cs3` packages.
+  - `workflows/build-cloudstream.yml`: Automated CI/CD GitHub Actions workflow template.
+  - `tools/verify-repository.ts`: Repository integrity verification tool.
+  - `tools/test-providers.ts`: Live provider endpoint diagnostic and reachability audit tool.
+- `streamix-extension-lab/package.json`: Added `verify:cloudstream` script.
+- `streamix-extension-lab/README.md`: Added section detailing the CloudStream single repository URL.
+
+### Single Repository URL Published
+- **Manifest URL**: `https://raw.githubusercontent.com/Swagsaiiff/streamix-extension-lab/builds/repo.json`
+- **Manifest Alias**: `https://raw.githubusercontent.com/Swagsaiiff/streamix-extension-lab/builds/CS.json`
+- **Plugin List**: `https://raw.githubusercontent.com/Swagsaiiff/streamix-extension-lab/builds/plugins.json`
+
+### Verification Performed
+1. `node --experimental-strip-types cloudstream-compatible/tools/verify-repository.ts` -> Verified all 5 extensions:
+   - `Bollyflix.cs3` (38,129 bytes, `sha256-507b486b195b98903b0cec0fca811c27fdff6cf200f6f94a662c64dd8abe0e59`)
+   - `CineStream.cs3` (695,013 bytes, `sha256-30dc643628702d6b2fe139339e59996783c95a0c1d41efe0a31872ae4d10908b`)
+   - `MoviesDrive.cs3` (47,290 bytes, `sha256-52758210caa1cf0a6dc929d0f73fec5919e0ab66e5eddf6386ed30f7c771980a`)
+   - `Moviesmod.cs3` (44,518 bytes, `sha256-9433fd970480a53f52f3ec4b49d3213c7bda5a26b109dc80ef82cd2ec13a37a7`)
+   - `VegaMovies.cs3` (41,565 bytes, `sha256-b78635ef4f2f66c134184552fe5e4956cc02ec1c5ce6d6811cccfd3747367883`)
+   - All internal `manifest.json` files and `classes.dex` Dalvik bytecode inspected and verified.
+2. `node --experimental-strip-types cloudstream-compatible/tools/test-providers.ts` -> Audited live provider endpoints and documented reachability.
+3. Git Remote Synchronization:
+   - `main` branch pushed to `https://github.com/Swagsaiiff/streamix-extension-lab` (source code, gradle, and documentation).
+   - `builds` branch published to `https://github.com/Swagsaiiff/streamix-extension-lab` (`repo.json`, `plugins.json`, and all 5 `.cs3` files).
+   - Tested HTTP GET on raw URLs -> all returned 200 OK.
+4. `npm run check` (inside `streamix-extension-lab/`) -> 35/35 SDK tests passed, all 5 CloudStream extensions passed.
+5. Zero application files in `packages/` were touched.
+
