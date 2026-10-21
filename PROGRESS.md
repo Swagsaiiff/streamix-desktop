@@ -1,3 +1,50 @@
+## Streamix Extension Lab: Centralized One-URL Repository Architecture (COMPLETED)
+
+### Objective
+Establish a centralized single-URL extension repository discovery architecture for Streamix Desktop, allowing users to enter one repository manifest URL (`repository.json`), discover the complete provider catalog (`plugins.json`), and download/verify native `.streamix-ext` packages (including CineStream, Bollyflix, MoviesDrive, Moviesmod, VegaMovies, and Sample Fixture) with automatic provider discovery.
+
+### Summary of Completed Deliverables
+1. **One-URL Repository Contract (`repository/repository.json` & Schemas):**
+   - Established official repository manifest specification linking to the provider catalog via `pluginLists: ["plugins.json"]` and `pluginsUrl: "plugins.json"`.
+   - Created `schemas/repository-manifest.schema.json` formalizing `repository.json` structure with reverse-DNS ID, name, version, and catalog pointers.
+   - Updated `schemas/repository-index.schema.json` to permit `pluginLists` and `pluginsUrl` on repository metadata.
+
+2. **Native SDK Repository Discovery Client (`sdk/src/repository.ts`):**
+   - Implemented `resolveUrl(baseUrl, relativeOrAbsolute)` supporting relative and absolute paths across HTTP, HTTPS, and local filesystems.
+   - Implemented `validateRepositoryManifest` and `assertValidRepositoryManifest`.
+   - Implemented `discoverCatalogUrl(repoManifest, repoManifestUrl)`.
+   - Implemented `fetchRepositoryManifest` and `fetchRepositoryCatalog` for single-URL discovery.
+   - Implemented `resolvePackageUrl` and `verifyAndLoadPackage` with SHA-256 integrity validation and API compatibility checks.
+   - Exported in `sdk/src/index.ts`.
+
+3. **Repository Builder Enhancements (`tools/repo-builder.ts`):**
+   - Added automatic provider discovery across `packages/` and `examples/`.
+   - Automatically validates provider manifests and builds missing `.streamix-ext` packages via `packageExtension()`.
+   - Calculates cryptographic SHA-256 hashes and file sizes for all packages.
+   - Maintains synchronized `repository/repository.json` and `repository/plugins.json`.
+
+4. **Automated Test Suite Expansion (`tests/repository-index.test.ts`):**
+   - Added 6 new test scenarios covering:
+     - Repository manifest validation (valid and invalid structures)
+     - Relative and absolute URL resolution
+     - Catalog discovery from repository manifest
+     - One-URL discovery of all 6 published providers
+     - Malformed and missing catalog error handling
+     - Automatic packaging and indexing of future providers upon rebuild
+   - All 62 test cases passed with 0 failures in 799ms.
+
+5. **Documentation Updates:**
+   - Updated `README.md` with complete One-URL architecture diagrams, hosting instructions, and discovery flow.
+   - Updated `docs/STREAMIX_INTEGRATION_SPEC.md` to specify `repository.json` as the input in the Settings panel.
+
+### Verification Results
+- **TypeScript Type Checking:** `npm run build:sdk` -> `tsc --noEmit` exited 0.
+- **Automated Test Suite:** `npm test` -> 62/62 tests passing across 5 suites in 799ms.
+- **Full Verification Pipeline:** `npm run check` -> build, test, package all 6 extensions, and repo build exited 0.
+- **Git Push:** Committed (`3a0e7ee`) and pushed to `https://github.com/Swagsaiiff/streamix-extension-lab` on `main`.
+
+---
+
 ## Streamix Extension Lab: Independent Native Desktop Ecosystem Refactoring (COMPLETED)
 
 ### Objective
