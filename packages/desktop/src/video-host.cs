@@ -73,6 +73,20 @@ namespace Streamix
         [DllImport("gdi32.dll")]
         static extern IntPtr GetStockObject(int fnObject);
 
+        [DllImport("gdi32.dll")]
+        static extern IntPtr CreateRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect);
+
+        [DllImport("gdi32.dll")]
+        static extern int CombineRgn(IntPtr hrgnDest, IntPtr hrgnSrc1, IntPtr hrgnSrc2, int fnCombineMode);
+
+        [DllImport("user32.dll")]
+        static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+
+        [DllImport("gdi32.dll")]
+        static extern bool DeleteObject(IntPtr hObject);
+
+        const int RGN_DIFF = 4;
+
         [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
         static extern IntPtr GetModuleHandle(string lpModuleName);
 
@@ -201,6 +215,20 @@ namespace Streamix
         static volatile int relY = 0;
         static volatile int targetW = 800;
         static volatile int targetH = 600;
+        static volatile int clipTop = 0;
+        static volatile int clipBottom = 0;
+        static volatile int centerX = 0;
+        static volatile int centerY = 0;
+        static volatile int centerW = 0;
+        static volatile int centerH = 0;
+        static int lastClipTop = -1;
+        static int lastClipBottom = -1;
+        static int lastCenterX = -1;
+        static int lastCenterY = -1;
+        static int lastCenterW = -1;
+        static int lastCenterH = -1;
+        static int lastRgnW = -1;
+        static int lastRgnH = -1;
         static int lastScreenX = -99999;
         static int lastScreenY = -99999;
         static int lastTargetW = -99999;
@@ -224,7 +252,7 @@ namespace Streamix
         {
             if (activeTimerId == UIntPtr.Zero)
             {
-                activeTimerId = SetTimer(IntPtr.Zero, UIntPtr.Zero, 30, IntPtr.Zero);
+                activeTimerId = SetTimer(IntPtr.Zero, UIntPtr.Zero, 10, IntPtr.Zero);
             }
         }
 
@@ -235,6 +263,68 @@ namespace Streamix
                 KillTimer(IntPtr.Zero, activeTimerId);
                 activeTimerId = UIntPtr.Zero;
             }
+        }
+
+        static void ApplyClipping()
+        {
+            if (currentHwnd == IntPtr.Zero || !IsWindow(currentHwnd)) return;
+
+            int ct = Math.Max(0, clipTop);
+            int cb = Math.Max(0, clipBottom);
+            int cx = Math.Max(0, centerX);
+            int cy = Math.Max(0, centerY);
+            int cw = Math.Max(0, centerW);
+            int ch = Math.Max(0, centerH);
+
+            if (ct == lastClipTop && cb == lastClipBottom &&
+                cx == lastCenterX && cy == lastCenterY && cw == lastCenterW && ch == lastCenterH &&
+                targetW == lastRgnW && targetH == lastRgnH)
+            {
+                return;
+            }
+
+            lastClipTop = ct;
+            lastClipBottom = cb;
+            lastCenterX = cx;
+            lastCenterY = cy;
+            lastCenterW = cw;
+            lastCenterH = ch;
+            lastRgnW = targetW;
+            lastRgnH = targetH;
+
+            if (ct <= 0 && cb <= 0 && (cw <= 0 || ch <= 0))
+            {
+                SetWindowRgn(currentHwnd, IntPtr.Zero, true);
+                return;
+            }
+
+            IntPtr fullRgn = CreateRectRgn(0, 0, targetW, targetH);
+            if (ct > 0 && ct < targetH)
+            {
+                IntPtr topRgn = CreateRectRgn(0, 0, targetW, ct);
+                CombineRgn(fullRgn, fullRgn, topRgn, RGN_DIFF);
+                DeleteObject(topRgn);
+            }
+            if (cb > 0 && cb < targetH)
+            {
+                int topOfBottom = Math.Max(0, targetH - cb);
+                IntPtr botRgn = CreateRectRgn(0, topOfBottom, targetW, targetH);
+                CombineRgn(fullRgn, fullRgn, botRgn, RGN_DIFF);
+                DeleteObject(botRgn);
+            }
+            if (cw > 0 && ch > 0)
+            {
+                int right = Math.Min(targetW, cx + cw);
+                int bottom = Math.Min(targetH, cy + ch);
+                if (right > cx && bottom > cy)
+                {
+                    IntPtr centerRgn = CreateRectRgn(cx, cy, right, bottom);
+                    CombineRgn(fullRgn, fullRgn, centerRgn, RGN_DIFF);
+                    DeleteObject(centerRgn);
+                }
+            }
+
+            SetWindowRgn(currentHwnd, fullRgn, true);
         }
 
         static void UpdateScreenPosition(bool force)
@@ -254,6 +344,7 @@ namespace Streamix
                 lastTargetW = targetW;
                 lastTargetH = targetH;
                 SetWindowPos(currentHwnd, IntPtr.Zero, pt.X, pt.Y, targetW, targetH, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                ApplyClipping();
             }
         }
 
@@ -372,30 +463,45 @@ namespace Streamix
                                                 curPt.Y >= lastScreenY && curPt.Y <= lastScreenY + lastTargetH;
                                 if (isInside)
                                 {
-                                    int dx = Math.Abs(curPt.X - lastGlobalMouseX);
-                                    int dy = Math.Abs(curPt.Y - lastGlobalMouseY);
-                                    if (dx >= 2 || dy >= 2)
-                                    {
-                                        lastGlobalMouseX = curPt.X;
-                                        lastGlobalMouseY = curPt.Y;
-                                        long now = DateTime.UtcNow.Ticks / 10000;
-                                        if (now - lastMouseMoveTime > 100)
-                                        {
-                                            lastMouseMoveTime = now;
-                                            SendResponse("{\"event\":\"mousemove\"}");
-                                        }
-                                    }
+                                    int relCursorY = curPt.Y - lastScreenY;
+                                    int relCursorX = curPt.X - lastScreenX;
+                                    bool inTopBar = clipTop > 0 && relCursorY < clipTop;
+                                    bool inBottomBar = clipBottom > 0 && relCursorY > (lastTargetH - clipBottom);
+                                    bool inCenter = (centerW > 0 && centerH > 0 &&
+                                                     relCursorX >= centerX && relCursorX <= centerX + centerW &&
+                                                     relCursorY >= centerY && relCursorY <= centerY + centerH);
 
-                                    bool isLDown = (GetAsyncKeyState(0x01) & 0x8000) != 0;
-                                    if (isLDown && !lastLButtonDown)
+                                    if (!inTopBar && !inBottomBar && !inCenter)
                                     {
-                                        if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                                        int dx = Math.Abs(curPt.X - lastGlobalMouseX);
+                                        int dy = Math.Abs(curPt.Y - lastGlobalMouseY);
+                                        if (dx >= 2 || dy >= 2)
                                         {
-                                            SetFocus(ownerHwnd);
+                                            lastGlobalMouseX = curPt.X;
+                                            lastGlobalMouseY = curPt.Y;
+                                            long now = DateTime.UtcNow.Ticks / 10000;
+                                            if (now - lastMouseMoveTime > 100)
+                                            {
+                                                lastMouseMoveTime = now;
+                                                SendResponse("{\"event\":\"mousemove\"}");
+                                            }
                                         }
-                                        SendResponse("{\"event\":\"click\"}");
+
+                                        bool isLDown = (GetAsyncKeyState(0x01) & 0x8000) != 0;
+                                        if (isLDown && !lastLButtonDown)
+                                        {
+                                            if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+                                            {
+                                                SetFocus(ownerHwnd);
+                                            }
+                                            SendResponse("{\"event\":\"click\"}");
+                                        }
+                                        lastLButtonDown = isLDown;
                                     }
-                                    lastLButtonDown = isLDown;
+                                    else
+                                    {
+                                        lastLButtonDown = false;
+                                    }
                                 }
                                 else
                                 {
@@ -446,15 +552,18 @@ namespace Streamix
                         );
                         pendingCreate.Result = currentHwnd;
                         EnsureTimer();
+                        ApplyClipping();
                         pendingCreate.Ready.Set();
                     }
                     else if (msg.message == WM_USER_BOUNDS)
                     {
                         UpdateScreenPosition(true);
+                        ApplyClipping();
                     }
                     else if (msg.message == WM_USER_SYNC)
                     {
                         UpdateScreenPosition(true);
+                        ApplyClipping();
                     }
                     else if (msg.message == WM_USER_SHOW)
                     {
@@ -463,6 +572,7 @@ namespace Streamix
                             ShowWindow(currentHwnd, SW_SHOW);
                             EnsureTimer();
                             UpdateScreenPosition(true);
+                            ApplyClipping();
                         }
                     }
                     else if (msg.message == WM_USER_HIDE)
@@ -553,6 +663,32 @@ namespace Streamix
                             relY = int.Parse(parts[offset + 1]);
                             targetW = int.Parse(parts[offset + 2]);
                             targetH = int.Parse(parts[offset + 3]);
+
+                            if (parts.Length >= offset + 6)
+                            {
+                                clipTop = int.Parse(parts[offset + 4]);
+                                clipBottom = int.Parse(parts[offset + 5]);
+                            }
+                            else
+                            {
+                                clipTop = 0;
+                                clipBottom = 0;
+                            }
+
+                            if (parts.Length >= offset + 10)
+                            {
+                                centerX = int.Parse(parts[offset + 6]);
+                                centerY = int.Parse(parts[offset + 7]);
+                                centerW = int.Parse(parts[offset + 8]);
+                                centerH = int.Parse(parts[offset + 9]);
+                            }
+                            else
+                            {
+                                centerX = 0;
+                                centerY = 0;
+                                centerW = 0;
+                                centerH = 0;
+                            }
 
                             PostThreadMessage(uiThreadId, WM_USER_BOUNDS, IntPtr.Zero, IntPtr.Zero);
                             SendResponse("{\"ok\":true,\"id\":" + reqId + "}");

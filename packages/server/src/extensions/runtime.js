@@ -1,3 +1,4 @@
+import nodePath from "node:path";
 import { unzipSync } from "fflate";
 import { transform } from "sucrase";
 import { diagnosticLogger } from "./diagnostics.js";
@@ -129,9 +130,10 @@ export class SandboxedExtensionRunner {
       const currentDir = normalizedPath.includes("/")
         ? normalizedPath.substring(0, normalizedPath.lastIndexOf("/"))
         : "";
-      const resolvedTarget = subpath.startsWith("./")
-        ? (currentDir ? `${currentDir}/${subpath.substring(2)}` : subpath.substring(2))
-        : subpath;
+      let resolvedTarget = subpath;
+      if (subpath.startsWith(".")) {
+        resolvedTarget = nodePath.posix.normalize(currentDir ? `${currentDir}/${subpath}` : subpath);
+      }
       return this.requireModule(resolvedTarget);
     };
 
@@ -316,6 +318,31 @@ export class SandboxedExtensionRunner {
         new Promise((_, reject) => {
           controller.signal.addEventListener("abort", () =>
             reject(new ExtensionTimeoutError("getDetails", timeoutMs, this.manifest.id))
+          );
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async getEpisodes(id, seasonNumber, options = {}) {
+    if (!this.extensionInstance || !this.isInitialized) {
+      throw new ExtensionError("Provider is not initialized", "NOT_INITIALIZED", this.manifest.id);
+    }
+    if (typeof this.extensionInstance.getEpisodes !== "function") {
+      return null;
+    }
+    const timeoutMs = options.timeoutMs || 15000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      return await Promise.race([
+        this.extensionInstance.getEpisodes(id, seasonNumber, { signal: controller.signal }),
+        new Promise((_, reject) => {
+          controller.signal.addEventListener("abort", () =>
+            reject(new ExtensionTimeoutError("getEpisodes", timeoutMs, this.manifest.id))
           );
         })
       ]);

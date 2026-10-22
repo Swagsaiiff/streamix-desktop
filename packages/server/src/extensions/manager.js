@@ -29,6 +29,92 @@ function resolveUrl(relativeOrAbsolute, baseUrl) {
   }
 }
 
+export function normalizeTitle(str) {
+  if (!str) return "";
+  return str
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export async function validateMediaCandidate(source, timeoutMs = 4000) {
+  if (!source || !source.url || typeof source.url !== "string") {
+    return { valid: false, reason: "MALFORMED_URL" };
+  }
+  const rawUrl = source.url.trim();
+  if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+    return { valid: false, reason: "INVALID_PROTOCOL" };
+  }
+
+  const clean = rawUrl.toLowerCase().split("?")[0];
+  if (clean.endsWith(".html") || clean.endsWith(".htm") || clean.includes("/embed/")) {
+    return { valid: false, reason: "HTML_EMBED_NOT_STREAM" };
+  }
+
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    ...(source.headers || {})
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    let res;
+    try {
+      res = await fetch(rawUrl, {
+        method: "HEAD",
+        headers,
+        signal: controller.signal,
+        redirect: "follow"
+      });
+    } catch {
+      // Retry with range GET
+    }
+
+    if (!res || !res.ok || res.status === 405) {
+      const getController = new AbortController();
+      const getTimer = setTimeout(() => getController.abort(), timeoutMs);
+      try {
+        res = await fetch(rawUrl, {
+          method: "GET",
+          headers: { ...headers, Range: "bytes=0-1024" },
+          signal: getController.signal,
+          redirect: "follow"
+        });
+      } finally {
+        clearTimeout(getTimer);
+      }
+    }
+
+    if (!res.ok) {
+      return { valid: false, reason: `HTTP_${res.status}` };
+    }
+
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (contentType.includes("text/html")) {
+      return { valid: false, reason: "CONTENT_TYPE_HTML" };
+    }
+
+    let detectedFormat = source.format || "mp4";
+    if (contentType.includes("mpegurl") || rawUrl.includes(".m3u8")) {
+      detectedFormat = "hls";
+    } else if (contentType.includes("matroska") || rawUrl.includes(".mkv")) {
+      detectedFormat = "mkv";
+    }
+
+    return { valid: true, contentType, format: detectedFormat, finalUrl: res.url || rawUrl };
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return { valid: false, reason: "TIMEOUT" };
+    }
+    return { valid: false, reason: err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class ExtensionManager {
   constructor({ dataDir = null, storageDir = null, defaultRepoUrl = null } = {}) {
     const cwd = process.cwd();
@@ -502,71 +588,199 @@ export class ExtensionManager {
       diagnosticLogger.info("pipeline", "provider_invoke", `Invoking provider '${record.displayName}' resolveSources...`);
 
       try {
-        // Step 1: Query provider search to get provider's mediaId if needed
-        let targetMediaId = imdbId || tmdbId || title;
+        // Step 1: Candidate matching
         let candidateItems = [];
-
         try {
           candidateItems = await runner.search(title, { timeoutMs: 8000 });
         } catch (searchErr) {
           diagnosticLogger.warn(record.id, "search", `Search for '${title}' failed: ${searchErr.message}`);
         }
 
-        if (candidateItems.length > 0) {
-          // Find best title match
-          const cleanTitle = title.toLowerCase().trim();
-          const match =
-            candidateItems.find((i) => i.title.toLowerCase().trim() === cleanTitle) || candidateItems[0];
-          if (match && match.id) {
-            targetMediaId = match.id;
+        const isUrlProvider = record.id !== "org.streamix.provider.cinestream" && record.id !== "org.streamix.provider.sample";
+        let targetMediaId = null;
+
+        if (Array.isArray(candidateItems) && candidateItems.length > 0) {
+          const normTarget = normalizeTitle(title);
+          const reqYear = Number(year);
+
+          // Find matches respecting type, year, and normalized title
+          const matches = candidateItems.filter((item) => {
+            if (!item || !item.title) return false;
+            if (type && item.type) {
+              const isItemSeries = item.type === "series" || item.type === "anime";
+              const isReqSeries = type === "series" || season != null;
+              if (isItemSeries !== isReqSeries) return false;
+            }
+            if (reqYear && item.releaseYear) {
+              if (Math.abs(item.releaseYear - reqYear) > 1) return false;
+            }
+            const normItem = normalizeTitle(item.title);
+            return normItem.includes(normTarget) || normTarget.includes(normItem);
+          });
+
+          if (matches.length > 0) {
+            const exactMatch = matches.find((m) => normalizeTitle(m.title) === normTarget);
+            const selected = exactMatch || matches[0];
+            targetMediaId = selected.id;
+            diagnosticLogger.info(
+              record.id,
+              "title_match_selected",
+              `Matched '${title}' -> '${selected.title}' (ID: ${selected.id})`
+            );
+          } else {
+            const rejectionReason = `No candidate matched title '${title}' (type: ${type}, year: ${year}). Candidates: [${candidateItems.map((c) => c.title).slice(0, 3).join(", ")}]`;
+            diagnosticLogger.warn(record.id, "match_rejection", rejectionReason);
+          }
+        } else {
+          diagnosticLogger.info(record.id, "search_empty", `Search returned 0 items for '${title}'`);
+        }
+
+        // If URL provider and no candidate matched, DO NOT pass external IMDb/TMDB ID!
+        if (!targetMediaId) {
+          if (!isUrlProvider && (imdbId || tmdbId)) {
+            targetMediaId = imdbId || tmdbId;
+          } else {
+            diagnosticLogger.warn(
+              record.id,
+              "no_provider_match",
+              `Provider '${record.displayName}' has no matching item for '${title}'. Skipping.`
+            );
+            errors.push({ provider: record.displayName, error: "NO_PROVIDER_MATCH" });
+            continue;
           }
         }
 
-        // Step 2: Query resolveSources
+        // Step 2: Series Episode Resolution (Phase 2B)
+        let resolvedEpisodeId = undefined;
+        const isSeries = type === "series" || season != null;
+
+        if (isSeries && typeof runner.getEpisodes === "function") {
+          diagnosticLogger.info(
+            record.id,
+            "episode_query",
+            `Fetching episodes for ${record.displayName} (mediaId: ${targetMediaId}, season: ${season || 1})...`
+          );
+          try {
+            const epList = await runner.getEpisodes(targetMediaId, season != null ? Number(season) : 1, { timeoutMs: 12000 });
+            if (Array.isArray(epList) && epList.length > 0) {
+              const reqSeason = season != null ? Number(season) : 1;
+              const reqEpisode = episode != null ? Number(episode) : 1;
+
+              const matchedEp = epList.find((e) => {
+                const epSeason = e.seasonNumber != null ? Number(e.seasonNumber) : (e.season != null ? Number(e.season) : reqSeason);
+                const epNumber = e.episodeNumber != null ? Number(e.episodeNumber) : (e.episode != null ? Number(e.episode) : null);
+                return epSeason === reqSeason && epNumber === reqEpisode;
+              });
+
+              if (matchedEp && matchedEp.id) {
+                resolvedEpisodeId = matchedEp.id;
+                diagnosticLogger.info(
+                  record.id,
+                  "episode_resolved",
+                  `Resolved S${reqSeason}E${reqEpisode} to episode ID '${resolvedEpisodeId}'`
+                );
+              } else {
+                const noEpMsg = `Requested S${reqSeason}E${reqEpisode} not found in provider episode list (${epList.length} episodes available)`;
+                diagnosticLogger.warn(record.id, "episode_not_found", noEpMsg);
+                errors.push({ provider: record.displayName, error: "EPISODE_NOT_FOUND" });
+                continue;
+              }
+            } else {
+              diagnosticLogger.warn(record.id, "episodes_empty", `Provider returned 0 episodes for S${season || 1}`);
+            }
+          } catch (epErr) {
+            diagnosticLogger.warn(record.id, "episodes_failed", `Failed to get episode list: ${epErr.message}`);
+          }
+        }
+
+        // Step 3: Resolve Sources
         const request = {
           mediaId: targetMediaId,
+          episodeId: resolvedEpisodeId,
           title,
           year: Number(year) || undefined,
           seasonNumber: season != null ? Number(season) : undefined,
-          episodeNumber: episode != null ? Number(episode) : undefined
+          episodeNumber: episode != null ? Number(episode) : undefined,
+          type,
+          imdbId,
+          tmdbId
         };
 
-        const result = await runner.resolveSources(request, 15000);
+        const result = await runner.resolveSources(request, 20000);
         const dur = Math.round(performance.now() - provStart);
 
         if (result && Array.isArray(result.sources) && result.sources.length > 0) {
-          diagnosticLogger.info(
-            record.id,
-            "extraction_success",
-            `Provider '${record.displayName}' returned ${result.sources.length} stream(s) in ${dur}ms`
-          );
-
-          winningProvider = {
-            id: record.id,
-            name: record.displayName,
-            version: record.version
-          };
-
+          // Step 4: Validate candidate sources (Phase 5)
+          const validSources = [];
           for (const s of result.sources) {
-            allSources.push({
-              ...s,
-              providerName: record.displayName,
-              providerId: record.id
-            });
+            if (!s || !s.url || typeof s.url !== "string" || !s.url.startsWith("http")) {
+              continue;
+            }
+            const validation = await validateMediaCandidate(s, 4000);
+            if (validation.valid) {
+              diagnosticLogger.info(
+                record.id,
+                "candidate_validated",
+                `Validated stream candidate [${validation.format || s.format || "stream"}] (${validation.contentType}): ${s.url.substring(0, 80)}`
+              );
+              validSources.push({
+                ...s,
+                url: validation.finalUrl || s.url,
+                format: validation.format || s.format,
+                providerName: record.displayName,
+                providerId: record.id
+              });
+            } else {
+              diagnosticLogger.warn(
+                record.id,
+                "candidate_rejected",
+                `Candidate rejected (${validation.reason}): ${s.url.substring(0, 80)}`
+              );
+            }
           }
 
-          if (Array.isArray(result.subtitles)) {
-            allSubtitles.push(...result.subtitles);
-          }
+          if (validSources.length > 0) {
+            diagnosticLogger.info(
+              record.id,
+              "extraction_success",
+              `Provider '${record.displayName}' returned ${validSources.length} validated stream(s) in ${dur}ms`
+            );
 
-          // We have found valid sources!
-          break;
+            if (!winningProvider) {
+              winningProvider = {
+                id: record.id,
+                name: record.displayName,
+                version: record.version
+              };
+            }
+
+            for (const vs of validSources) {
+              if (!allSources.some((existing) => existing.url === vs.url)) {
+                allSources.push(vs);
+              }
+            }
+
+            if (Array.isArray(result.subtitles)) {
+              allSubtitles.push(...result.subtitles);
+            }
+
+            // Successfully found validated streams from this provider!
+            break;
+          } else {
+            diagnosticLogger.warn(
+              record.id,
+              "extraction_empty",
+              `Provider '${record.displayName}' produced 0 valid playable stream candidates`
+            );
+            errors.push({ provider: record.displayName, error: "STREAMS_EMPTY" });
+          }
         } else {
           diagnosticLogger.warn(
             record.id,
             "extraction_empty",
             `Provider '${record.displayName}' completed in ${dur}ms with 0 streams`
           );
+          errors.push({ provider: record.displayName, error: "STREAMS_EMPTY" });
         }
       } catch (err) {
         const dur = Math.round(performance.now() - provStart);

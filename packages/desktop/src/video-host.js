@@ -179,34 +179,48 @@ export class VideoHostManager {
     const y = Math.max(0, Math.round(bounds.y || 0));
     const w = Math.max(1, Math.round(bounds.width || 100));
     const h = Math.max(1, Math.round(bounds.height || 100));
+    const ct = Math.max(0, Math.round(bounds.clipTop || 0));
+    const cb = Math.max(0, Math.round(bounds.clipBottom || 0));
+    const cx = bounds.clipCenter ? Math.round(bounds.clipCenter.x || 0) : 0;
+    const cy = bounds.clipCenter ? Math.round(bounds.clipCenter.y || 0) : 0;
+    const cw = bounds.clipCenter ? Math.round(bounds.clipCenter.width || 0) : 0;
+    const ch = bounds.clipCenter ? Math.round(bounds.clipCenter.height || 0) : 0;
+
+    const next = { x, y, width: w, height: h, ct, cb, cx, cy, cw, ch };
 
     if (
       this.lastBounds &&
       this.lastBounds.x === x &&
       this.lastBounds.y === y &&
       this.lastBounds.width === w &&
-      this.lastBounds.height === h
+      this.lastBounds.height === h &&
+      this.lastBounds.ct === ct &&
+      this.lastBounds.cb === cb &&
+      this.lastBounds.cx === cx &&
+      this.lastBounds.cy === cy &&
+      this.lastBounds.cw === cw &&
+      this.lastBounds.ch === ch
     ) {
       return { ok: true };
     }
 
-    this.lastBounds = { x, y, width: w, height: h };
+    this.lastBounds = next;
 
     if (this.inFlightBounds) {
-      this.pendingBounds = { x, y, width: w, height: h };
+      this.pendingBounds = next;
       return { ok: true };
     }
 
     this.inFlightBounds = true;
     try {
-      const res = await this.sendCommand("BOUNDS", x, y, w, h);
+      const res = await this.sendCommand("BOUNDS", x, y, w, h, ct, cb, cx, cy, cw, ch);
       return res;
     } finally {
       this.inFlightBounds = false;
       if (this.pendingBounds && this.currentHwnd) {
-        const next = this.pendingBounds;
+        const nextPending = this.pendingBounds;
         this.pendingBounds = null;
-        this.setBounds(next).catch(() => {});
+        this.setBounds(nextPending).catch(() => {});
       }
     }
   }

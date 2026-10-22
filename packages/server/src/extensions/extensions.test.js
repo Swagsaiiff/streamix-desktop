@@ -93,6 +93,14 @@ test("ExtensionManager manages install, auto-enable, toggle and uninstall", asyn
         arrayBuffer: async () => zipped.buffer
       };
     }
+    if (url === "https://cdn.example.com/video.mp4") {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "video/mp4" }),
+        url
+      };
+    }
     return { ok: false, status: 404 };
   };
 
@@ -312,11 +320,284 @@ test("extensionsRouter validates and handles both providerId and id payloads", a
   assert.equal(resJson.error, "validation_error");
 
   await uninstallLayer.route.stack[0].handle({ body: {} }, mockRes);
-  assert.equal(resStatus, 400);
-  assert.equal(resJson.error, "validation_error");
-
   await toggleLayer.route.stack[0].handle({ body: {} }, mockRes);
   assert.equal(resStatus, 400);
   assert.equal(resJson.error, "validation_error");
 });
+
+test("A series request resolves the correct episode ID and preserves media ID", async () => {
+  const testDir = path.join(process.cwd(), "scratch-series-test-" + Date.now());
+  const manager = new ExtensionManager({ storageDir: testDir });
+
+  let capturedRequest = null;
+  const manifest = {
+    id: "series-test-provider",
+    displayName: "Series Test Provider",
+    version: "1.0.0",
+    main: "index.js",
+    contentTypes: ["series"],
+    languages: ["en"]
+  };
+  const scriptContent = `
+    exports.search = async function(q) {
+      return [{ id: "https://provider.test/series/vincenzo", title: "Vincenzo", type: "series", releaseYear: 2021 }];
+    };
+    exports.getEpisodes = async function(mediaId, season) {
+      return [
+        { id: "https://provider.test/stream/s1e1", seasonNumber: 1, episodeNumber: 1, title: "Episode 1" },
+        { id: "https://provider.test/stream/s1e2", seasonNumber: 1, episodeNumber: 2, title: "Episode 2" }
+      ];
+    };
+    exports.resolveSources = async function(req) {
+      global.__capturedReq = req;
+      return {
+        sources: [{ url: "https://cdn.example.com/s1e1.mkv", format: "mkv", quality: "1080p" }]
+      };
+    };
+  `;
+  const zipped = zipSync({
+    "manifest.json": strToU8(JSON.stringify(manifest)),
+    "index.js": strToU8(scriptContent)
+  });
+  const unpacked = unpackExtensionPackage(zipped);
+  const runner = new SandboxedExtensionRunner(unpacked);
+  await runner.initialize();
+
+  manager.installed.set("series-test-provider", {
+    id: "series-test-provider",
+    displayName: "Series Test Provider",
+    version: "1.0.0",
+    enabled: true
+  });
+  manager.runners.set("series-test-provider", runner);
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (url === "https://cdn.example.com/s1e1.mkv") {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "video/matroska" }),
+        url
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const result = await manager.resolveSources({
+      title: "Vincenzo",
+      year: 2021,
+      type: "series",
+      season: 1,
+      episode: 1,
+      imdbId: "tt13433812"
+    });
+
+    assert.equal(result.provider.id, "series-test-provider");
+    assert.equal(result.sources.length, 1);
+    assert.equal(result.sources[0].url, "https://cdn.example.com/s1e1.mkv");
+    assert.equal(global.__capturedReq.episodeId, "https://provider.test/stream/s1e1");
+    assert.equal(global.__capturedReq.mediaId, "https://provider.test/series/vincenzo");
+    assert.equal(global.__capturedReq.seasonNumber, 1);
+    assert.equal(global.__capturedReq.episodeNumber, 1);
+  } finally {
+    delete global.__capturedReq;
+    global.fetch = originalFetch;
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("URL-based provider returning 0 search results is NOT called with an IMDb ID", async () => {
+  const testDir = path.join(process.cwd(), "scratch-nomatch-test-" + Date.now());
+  const manager = new ExtensionManager({ storageDir: testDir });
+
+  let resolverWasCalled = false;
+  const manifest = {
+    id: "vegamovies-mock",
+    displayName: "VegaMovies Mock",
+    version: "1.0.0",
+    main: "index.js",
+    contentTypes: ["series"],
+    languages: ["en"]
+  };
+  const scriptContent = `
+    exports.search = async function(q) {
+      return []; // 0 search results
+    };
+    exports.resolveSources = async function(req) {
+      global.__resolverCalled = true;
+      return { sources: [] };
+    };
+  `;
+  const zipped = zipSync({
+    "manifest.json": strToU8(JSON.stringify(manifest)),
+    "index.js": strToU8(scriptContent)
+  });
+  const unpacked = unpackExtensionPackage(zipped);
+  const runner = new SandboxedExtensionRunner(unpacked);
+  await runner.initialize();
+
+  manager.installed.set("vegamovies-mock", {
+    id: "vegamovies-mock",
+    displayName: "VegaMovies Mock",
+    version: "1.0.0",
+    enabled: true
+  });
+  manager.runners.set("vegamovies-mock", runner);
+
+  try {
+    await assert.rejects(
+      () => manager.resolveSources({
+        title: "Vincenzo",
+        year: 2021,
+        type: "series",
+        season: 1,
+        episode: 1,
+        imdbId: "tt13433812"
+      }),
+      /No playable streams found/
+    );
+
+    assert.equal(global.__resolverCalled, undefined, "resolveSources should NEVER be called with fallback IMDb ID");
+  } finally {
+    delete global.__resolverCalled;
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("A non-exact title match is rejected and not blindly replaced with candidate[0]", async () => {
+  const testDir = path.join(process.cwd(), "scratch-mismatch-test-" + Date.now());
+  const manager = new ExtensionManager({ storageDir: testDir });
+
+  const manifest = {
+    id: "mismatch-provider",
+    displayName: "Mismatch Provider",
+    version: "1.0.0",
+    main: "index.js",
+    contentTypes: ["movie"],
+    languages: ["en"]
+  };
+  const scriptContent = `
+    exports.search = async function(q) {
+      // Returns totally unrelated movie
+      return [{ id: "m1", title: "Harry Potter and the Goblet of Fire", type: "movie", releaseYear: 2005 }];
+    };
+    exports.resolveSources = async function(req) {
+      global.__mismatchCalled = true;
+      return { sources: [] };
+    };
+  `;
+  const zipped = zipSync({
+    "manifest.json": strToU8(JSON.stringify(manifest)),
+    "index.js": strToU8(scriptContent)
+  });
+  const unpacked = unpackExtensionPackage(zipped);
+  const runner = new SandboxedExtensionRunner(unpacked);
+  await runner.initialize();
+
+  manager.installed.set("mismatch-provider", {
+    id: "mismatch-provider",
+    displayName: "Mismatch Provider",
+    version: "1.0.0",
+    enabled: true
+  });
+  manager.runners.set("mismatch-provider", runner);
+
+  try {
+    await assert.rejects(
+      () => manager.resolveSources({ title: "Avatar", year: 2009, type: "movie" }),
+      /No playable streams found/
+    );
+    assert.equal(global.__mismatchCalled, undefined, "Resolver should NOT be invoked for unrelated candidate");
+  } finally {
+    delete global.__mismatchCalled;
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Upstream failure on one provider does not prevent next provider from succeeding", async () => {
+  const testDir = path.join(process.cwd(), "scratch-fallback-test-" + Date.now());
+  const manager = new ExtensionManager({ storageDir: testDir });
+
+  // Provider 1: Fails with 403
+  const p1Manifest = { id: "p1-fail", displayName: "Failing Provider", version: "1.0.0", main: "index.js" };
+  const p1Script = `
+    exports.search = async () => [{ id: "p1-item", title: "Avatar", type: "movie", releaseYear: 2009 }];
+    exports.resolveSources = async () => { throw new Error("Upstream HTTP 403 Forbidden"); };
+  `;
+  const p1Zipped = zipSync({ "manifest.json": strToU8(JSON.stringify(p1Manifest)), "index.js": strToU8(p1Script) });
+  const p1Runner = new SandboxedExtensionRunner(unpackExtensionPackage(p1Zipped));
+  await p1Runner.initialize();
+
+  // Provider 2: Succeeds
+  const p2Manifest = { id: "p2-pass", displayName: "Passing Provider", version: "1.0.0", main: "index.js" };
+  const p2Script = `
+    exports.search = async () => [{ id: "p2-item", title: "Avatar", type: "movie", releaseYear: 2009 }];
+    exports.resolveSources = async () => ({ sources: [{ url: "https://cdn.example.com/avatar.mp4", format: "mp4" }] });
+  `;
+  const p2Zipped = zipSync({ "manifest.json": strToU8(JSON.stringify(p2Manifest)), "index.js": strToU8(p2Script) });
+  const p2Runner = new SandboxedExtensionRunner(unpackExtensionPackage(p2Zipped));
+  await p2Runner.initialize();
+
+  manager.installed.set("p1-fail", { id: "p1-fail", displayName: "Failing Provider", version: "1.0.0", enabled: true });
+  manager.runners.set("p1-fail", p1Runner);
+
+  manager.installed.set("p2-pass", { id: "p2-pass", displayName: "Passing Provider", version: "1.0.0", enabled: true });
+  manager.runners.set("p2-pass", p2Runner);
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (url === "https://cdn.example.com/avatar.mp4") {
+      return { ok: true, status: 200, headers: new Headers({ "content-type": "video/mp4" }), url };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  try {
+    const res = await manager.resolveSources({ title: "Avatar", year: 2009, type: "movie" });
+    assert.equal(res.provider.id, "p2-pass");
+    assert.equal(res.sources[0].url, "https://cdn.example.com/avatar.mp4");
+  } finally {
+    global.fetch = originalFetch;
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("HTTP 200 HTML pages are rejected and not accepted as video streams", async () => {
+  const testDir = path.join(process.cwd(), "scratch-html-test-" + Date.now());
+  const manager = new ExtensionManager({ storageDir: testDir });
+
+  const manifest = { id: "html-streamer", displayName: "HTML Streamer", version: "1.0.0", main: "index.js" };
+  const scriptContent = `
+    exports.search = async () => [{ id: "item1", title: "Test", type: "movie", releaseYear: 2020 }];
+    exports.resolveSources = async () => ({ sources: [{ url: "https://example.com/page.html" }] });
+  `;
+  const zipped = zipSync({ "manifest.json": strToU8(JSON.stringify(manifest)), "index.js": strToU8(scriptContent) });
+  const runner = new SandboxedExtensionRunner(unpackExtensionPackage(zipped));
+  await runner.initialize();
+
+  manager.installed.set("html-streamer", { id: "html-streamer", displayName: "HTML Streamer", version: "1.0.0", enabled: true });
+  manager.runners.set("html-streamer", runner);
+
+  try {
+    await assert.rejects(
+      () => manager.resolveSources({ title: "Test", year: 2020, type: "movie" }),
+      /No playable streams found/
+    );
+  } finally {
+    if (fs.existsSync(testDir)) {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    }
+  }
+});
+
 

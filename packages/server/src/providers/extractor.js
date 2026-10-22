@@ -155,6 +155,12 @@ export function createResolver({
               variantCount: extResult.sources.length
             },
             sourceUrl: primarySource.url,
+            candidates: extResult.sources.map((s) => ({
+              url: s.url,
+              quality: s.quality || (s.height ? `${s.height}p` : null),
+              format: s.format,
+              headers: s.headers || primarySource.headers || {}
+            })),
             variants: extResult.sources.map((s) => ({
               url: s.url,
               quality: s.quality || (s.height ? `${s.height}p` : null),

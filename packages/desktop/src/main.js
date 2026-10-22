@@ -320,18 +320,14 @@ async function createWindow() {
     }
   }
 
-  let syncScheduled = false;
-  const throttledSync = () => {
-    if (syncScheduled) return;
-    syncScheduled = true;
-    setTimeout(() => {
-      syncScheduled = false;
-      videoHost.sync().catch(() => {});
-    }, 50);
+  const syncWindowPosition = () => {
+    videoHost.sync().catch(() => {});
   };
 
-  mainWindow.on("move", throttledSync);
-  mainWindow.on("resize", throttledSync);
+  mainWindow.on("move", syncWindowPosition);
+  mainWindow.on("resize", syncWindowPosition);
+  mainWindow.on("will-move", syncWindowPosition);
+  mainWindow.on("will-resize", syncWindowPosition);
 
   mainWindow.on("minimize", () => {
     videoHost.hide().catch(() => {});

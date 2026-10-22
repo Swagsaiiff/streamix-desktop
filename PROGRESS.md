@@ -1,3 +1,107 @@
+## Streamix Desktop Video Controller Z-Order & Native Canvas Fix (COMPLETED)
+
+### Objective
+Fix the video controller rendering behind the native video canvas in Streamix Desktop. Ensure playback controls, seekbar, and overlays always render above the video, do not intercept or cover clicks intended for controls, remain visible and interactive during playback/moving/resizing/restoring, and do not cause canvas resizing or rely on arbitrary delays.
+
+### Confirmed Root Causes Diagnosed
+1. **Owned Popup Window Z-Order Enforced Above Parent:**
+   - In `packages/desktop/src/video-host.cs`, `currentHwnd` is created as an owned popup window of `mainWindow` (`WS_POPUP` with `hWndParent = ownerHwnd`).
+   - In Win32 USER32/DWM, an owned window is always maintained physically on top of its owner in the z-order hierarchy.
+   - Because `currentHwnd` spanned the full client area `(0, 0, width, height)` over the video canvas, it physically occluded `mainWindow`'s HTML/Chromium compositor surface where the player controls (`.player-top`, `.player-bottom`, seek bar, action buttons) were rendered.
+2. **50ms Move/Resize Lag Caused Brief Visibility on Window Movement:**
+   - In `packages/desktop/src/main.js`, `mainWindow.on("move")` and `mainWindow.on("resize")` were throttled with a 50ms `setTimeout`.
+   - When the window was moved or shaken, `mainWindow` moved instantly while `currentHwnd` lagged behind by 50–80ms, briefly revealing the HTML controls underneath before snapping back over them.
+3. **Mouse Click Interception:**
+   - `video-host.cs` had a global click listener that intercepted clicks over the video area, preventing clicks on controls and action buttons from reaching React when the owned window sat on top.
+
+### Fixes Applied
+1. **Dynamic GDI Region Clipping (`packages/desktop/src/video-host.cs`):**
+   - Added Win32 GDI region clipping APIs (`CreateRectRgn`, `CombineRgn`, `SetWindowRgn`, `DeleteObject`, `RGN_DIFF`).
+   - Implemented `ApplyClipping()` to dynamically carve out non-video regions:
+     - Top bar region (`0, 0, targetW, clipTop`)
+     - Bottom bar region (`0, targetH - clipBottom, targetW, targetH`)
+     - Center dialog/button region (`centerX, centerY, centerX + centerW, centerY + centerH`)
+   - Combined and subtracted these control rects using `RGN_DIFF` so the video window physically only covers the visible video frame.
+   - When controls auto-hide (`clipTop === 0 && clipBottom === 0`), the window region is reset to `IntPtr.Zero`, displaying the full unclipped video seamlessly without resizing the canvas or changing aspect ratio.
+   - Recompiled `packages/desktop/bin/streamix-video-host.exe` using .NET 4.0 `csc.exe`.
+2. **Hit-Test Exclusion for Controls (`packages/desktop/src/video-host.cs`):**
+   - Mouse click and move hit-testing in `EnsureTimer()` was updated to detect if the cursor is within the top, bottom, or center control rects. When hovering or clicking controls, `video-host.cs` ignores the input and lets Chromium receive native mouse events directly.
+   - Reduced timer interval from 30ms to 10ms for instant repositioning and zero lag.
+3. **Real-time Window Synchronization (`packages/desktop/src/main.js`):**
+   - Removed the 50ms `setTimeout` throttle on `mainWindow.on("move")` and `mainWindow.on("resize")`.
+   - Added synchronous handlers for `will-move` and `will-resize` calling `videoHost.sync()` immediately without delay.
+4. **Dynamic Control Bounds Measurement (`packages/client/src/components/Player.jsx`):**
+   - Updated `computeBounds` and `updateBounds` to calculate the exact bounding box of `.player-top`, `.player-bottom`, and modal centers (`.player-center`, `.player-error-panel`, `.player-next-panel`, `.player-big-play`).
+   - Added `[isDesktop, fullscreen, phase, controlsVisible, playing, ended, switching, error]` to the `updateBounds` hook dependencies to immediately update the clip regions whenever controls show, hide, pause, or switch states.
+5. **IPC Bounds Protocol Extension (`packages/desktop/src/video-host.js`):**
+   - Extended `setBounds()` to transmit `clipTop`, `clipBottom`, `centerX`, `centerY`, `centerW`, `centerH` to `streamix-video-host.exe` via `BOUNDS x y w h ct cb cx cy cw ch`.
+
+### Verification Evidence
+- Monorepo tests: `npm test` -> 107/107 tests pass (73 server, 34 client).
+- Client build: `npm run build` -> Clean Vite build in 255ms.
+- Packaging: `npm run package:desktop` -> Successfully built `packages/desktop/dist/STREAMIX Setup 1.0.15.exe` (93.5 MB) and updated `packages/desktop/dist/setup.exe`.
+
+---
+
+## Series Episode Playback & Provider Orchestration Fixes (COMPLETED)
+
+### Objective
+Diagnose and resolve the reproduction case where playing series episodes (*Vincenzo (2021) Season 1 Episode 1*) failed across enabled extensions. Fix series episode mapping, provider-specific ID handling, source extraction, and playback validation without fabricating streams or accepting HTML pages as video.
+
+### Confirmed Root Causes Diagnosed
+1. **Series Episode Resolution Missing from Orchestrator:**
+   - In `ExtensionManager.resolveSources()` (`packages/server/src/extensions/manager.js`), the orchestrator never resolved series episodes or queried `getEpisodes`.
+   - It invoked providers with `mediaId: targetMediaId` (the series landing page URL) and `request.episodeId: undefined`.
+   - Provider extensions evaluated `const targetUrl = request.episodeId || request.mediaId;` and attempted stream extraction directly on the series landing page HTML.
+2. **Invalid External ID Fallback to Web Scraping Providers (VegaMovies / URL-based):**
+   - When a provider's search returned 0 items, `targetMediaId` fell back to `imdbId` (e.g. `tt13433812`).
+   - The orchestrator called URL-based scrapers with `mediaId: "tt13433812"`, causing VegaMovies to query `https://1vegamovies.pics/tt13433812` -> HTTP 404.
+   - Non-matching search items were previously falling back to `candidateItems[0]` regardless of title/year.
+3. **HubCloud Extractor Incomplete Hop:**
+   - In `packages/server/src/extensions/sdk.js` and `streamix-extension-lab/sdk/src/extractors/hubcloud.ts`, HubCloud extracted `targetLink` (`var url = 'https://gamerxyt.com/hubcloud.php?...'`), but never fetched this second hop where the actual Pixeldrain download link (`var pxl = ...`) and direct links resided.
+4. **GDFlix Host Replacement Bug:**
+   - In `extractGdflixSources`, `initialUrl` had its domain replaced by `new6.gdflix.io` even when the host was `fxlinks.rest`, causing an upstream 403 on valid link aggregators.
+5. **MoviesDrive Episode Pack Aggregation:**
+   - On MoviesDrive, the series page points to single-episode archive pages (e.g. `mdrive.lol/archive/11727/`). `getEpisodes` had not resolved into the archive pages, and `resolveSources` had extracted all episodes on the page indiscriminately rather than targeting the requested episode number.
+6. **Moviesmod Brittle Attribute Ordering:**
+   - Button regexes required `class` to precede `href`, failing on HTML pages where `href` appeared before `class`.
+
+### Fixes Applied
+1. **Core Orchestrator Overhaul (`ExtensionManager.resolveSources` in `packages/server/src/extensions/manager.js`):**
+   - **Strict Title & Media Type Matching:** Added `normalizeTitle`. Enforces matching of media type (`series` vs `movie`), release year (±1 year tolerance), and normalized title. Never falls back to `candidateItems[0]`.
+   - **Proper Provider ID Handling:** URL-based scrapers without matching candidates skip source resolution and record `NO_PROVIDER_MATCH`. IMDb IDs (`tt13433812`) are never sent to URL-based scrapers.
+   - **Provider-Aware Episode Resolution:** For series, if `runner.getEpisodes` is available, queries provider episodes for the requested season, matches the exact episode (`seasonNumber` and `episodeNumber`), and passes `resolvedEpisodeId` in `request.episodeId` alongside parent `mediaId`. If not found, logs `EPISODE_NOT_FOUND` and continues to next provider.
+   - **Real Media Candidate Validation:** Added `validateMediaCandidate`. Performs bounded probe (HEAD and Range GET `bytes=0-1024`) checking HTTP status, timeouts, and `content-type`. Discards HTML pages (`text/html`), embed players, 403s, and 404s. Automatically identifies direct stream formats (`mkv`, `mp4`, `hls`).
+   - **Multi-Provider Fallback:** Isolates each provider's execution. Upstream 403s or failures on BollyFlix or CineStream do not block MoviesDrive or subsequent providers.
+2. **Runtime Runner Enhancements (`packages/server/src/extensions/runtime.js`):**
+   - Added `async getEpisodes(id, seasonNumber, options)` to `SandboxedExtensionRunner`.
+   - Fixed relative module require in sandboxed runner using `nodePath.posix.normalize` to correctly support `.` and `..` segments.
+3. **Extractor & SDK Fixes (`packages/server/src/extensions/sdk.js` & `streamix-extension-lab`):**
+   - Enhanced `extractHubCloudSources` with multi-hop resolution, `extractPxlUrl` parsing, and direct video links.
+   - Fixed `extractGdflixSources` to only replace base domain if host is actually `gdflix` or `gdlink`.
+   - Updated `MoviesDrive` in extension lab to parse individual episodes from archive index pages and filter `resolveSources` by `request.episodeNumber`.
+   - Updated `Moviesmod` in extension lab to make button anchor parsing attribute-order independent.
+   - Rebuilt all 6 extension packages with `npm run package:all` in `streamix-extension-lab` and updated hashes in `repository/plugins.json`.
+4. **Candidate Handoff to Player (`packages/server/src/providers/extractor.js`):**
+   - Passed `candidates: extResult.sources.map(...)` in `resolveStream` so client player has all validated candidates available for fallback.
+5. **Phase 7 Regression Tests Added (`packages/server/src/extensions/extensions.test.js`):**
+   - Tests series episode ID resolution and request payload preservation.
+   - Tests URL-based provider with 0 search matches is not called with IMDb ID.
+   - Tests non-exact title matches are rejected rather than blindly picking candidate 0.
+   - Tests upstream 403 fallback to next enabled provider.
+   - Tests HTTP 200 HTML pages are rejected and not accepted as video streams.
+
+### Verification Evidence
+- `node scratch/test_manager_vincenzo.mjs`: Live resolution of *Vincenzo (2021) Season 1 Episode 1* succeeded in 5.4 seconds via MoviesDrive -> HubCloud -> Pixeldrain, yielding a verified direct `video/matroska` stream (`https://pixeldrain.com/api/file/ZB9bVfuF?download`, 313 MB).
+- `streamix-extension-lab`: `npm test` -> 62/62 tests pass.
+- `streamix-extension-lab`: `npm run package:all` -> Cleanly packaged all 6 extensions and rebuilt `plugins.json`.
+- `packages/server`: `npm test` -> 73/73 tests pass.
+- Monorepo `npm test`: 107/107 tests pass (73 server tests, 34 client tests).
+- `npm run build`: Vite production client build succeeded in 248ms.
+- `npm run package:desktop`: Successfully built `packages/desktop/dist/STREAMIX Setup 1.0.13.exe` and updated `packages/desktop/dist/setup.exe`.
+
+---
+
 ## Extension Installation, Uninstallation, and Runtime Compatibility Fixes (COMPLETED)
 
 ### Objective

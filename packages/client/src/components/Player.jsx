@@ -349,11 +349,27 @@ export default function Player({ item, onClose, onProgress }) {
             if (!canvasRef.current) return { x: 0, y: 0, width: 1280, height: 800 };
             const rect = canvasRef.current.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
+            let clipTop = 0;
+            let clipBottom = 0;
+            if (controlsVisible || phase !== "ready") {
+              const topEl = containerRef.current?.querySelector(".player-top");
+              if (topEl) {
+                const tRect = topEl.getBoundingClientRect();
+                clipTop = Math.max(0, Math.round(tRect.bottom * dpr));
+              }
+              const bottomEl = containerRef.current?.querySelector(".player-bottom");
+              if (bottomEl) {
+                const bRect = bottomEl.getBoundingClientRect();
+                clipBottom = Math.max(0, Math.round((rect.bottom - bRect.top) * dpr));
+              }
+            }
             return {
               x: Math.round(rect.left * dpr),
               y: Math.round(rect.top * dpr),
               width: Math.max(1, Math.round(rect.width * dpr)),
-              height: Math.max(1, Math.round(rect.height * dpr))
+              height: Math.max(1, Math.round(rect.height * dpr)),
+              clipTop,
+              clipBottom
             };
           };
 
@@ -919,18 +935,58 @@ export default function Player({ item, onClose, onProgress }) {
       if (!canvasRef.current || !mpvAdapterRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
+
+      let clipTop = 0;
+      let clipBottom = 0;
+      let clipCenter = null;
+
+      if (controlsVisible || phase !== "ready") {
+        const topEl = containerRef.current?.querySelector(".player-top");
+        if (topEl) {
+          const tRect = topEl.getBoundingClientRect();
+          clipTop = Math.max(0, Math.round(tRect.bottom * dpr));
+        }
+        const bottomEl = containerRef.current?.querySelector(".player-bottom");
+        if (bottomEl) {
+          const bRect = bottomEl.getBoundingClientRect();
+          clipBottom = Math.max(0, Math.round((rect.bottom - bRect.top) * dpr));
+        }
+      }
+
+      if (!playing || phase === "error" || ended || switching) {
+        const centerEl = containerRef.current?.querySelector(".player-center, .player-error-panel, .player-next-panel, .player-big-play");
+        if (centerEl) {
+          const cRect = centerEl.getBoundingClientRect();
+          if (cRect.width > 0 && cRect.height > 0) {
+            clipCenter = {
+              x: Math.max(0, Math.round((cRect.left - rect.left) * dpr)),
+              y: Math.max(0, Math.round((cRect.top - rect.top) * dpr)),
+              width: Math.round(cRect.width * dpr),
+              height: Math.round(cRect.height * dpr)
+            };
+          }
+        }
+      }
+
       const nextBounds = {
         x: Math.round(rect.left * dpr),
         y: Math.round(rect.top * dpr),
         width: Math.max(1, Math.round(rect.width * dpr)),
-        height: Math.max(1, Math.round(rect.height * dpr))
+        height: Math.max(1, Math.round(rect.height * dpr)),
+        clipTop,
+        clipBottom,
+        clipCenter
       };
+
       if (
         lastBoundsRef.current &&
         lastBoundsRef.current.x === nextBounds.x &&
         lastBoundsRef.current.y === nextBounds.y &&
         lastBoundsRef.current.width === nextBounds.width &&
-        lastBoundsRef.current.height === nextBounds.height
+        lastBoundsRef.current.height === nextBounds.height &&
+        lastBoundsRef.current.clipTop === nextBounds.clipTop &&
+        lastBoundsRef.current.clipBottom === nextBounds.clipBottom &&
+        JSON.stringify(lastBoundsRef.current.clipCenter) === JSON.stringify(nextBounds.clipCenter)
       ) {
         return;
       }
@@ -945,7 +1001,7 @@ export default function Player({ item, onClose, onProgress }) {
       observer.disconnect();
       window.removeEventListener("resize", updateBounds);
     };
-  }, [isDesktop, fullscreen, phase]);
+  }, [isDesktop, fullscreen, phase, controlsVisible, playing, ended, switching, error]);
 
   const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const bufferedPct = duration > 0 ? Math.min(100, (buffered / duration) * 100) : 0;

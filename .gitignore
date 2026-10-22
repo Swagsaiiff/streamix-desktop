@@ -73,4 +73,5 @@ packages/server/data/
 *.zip
 streamix-extension-lab/
 streamix-repository-tester/
+scratch/
 

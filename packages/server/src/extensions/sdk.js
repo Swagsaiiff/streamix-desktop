@@ -258,9 +258,9 @@ export async function extractHubCloudSources(initialUrl, customFetch = fetch) {
       targetLink = `${extractBaseUrl(currentUrl)}/${targetLink.replace(/^\/+/, "")}`;
     }
 
-    const pxlMatch = extractPxlUrl(html1);
-    if (pxlMatch) {
-      const pxlId = pxlMatch.split("/").pop()?.replace(/\?.*$/, "");
+    const pxlMatch1 = extractPxlUrl(html1);
+    if (pxlMatch1) {
+      const pxlId = pxlMatch1.split("/").pop()?.replace(/\?.*$/, "");
       if (pxlId) {
         sources.push({
           url: `https://pixeldrain.com/api/file/${pxlId}?download`,
@@ -271,14 +271,79 @@ export async function extractHubCloudSources(initialUrl, customFetch = fetch) {
       }
     }
 
-    const directMatch = /https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4|mkv)[^\s"'<>]*/i.exec(html1);
-    if (directMatch) {
+    const directMatch1 = /https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4|mkv)[^\s"'<>]*/i.exec(html1);
+    if (directMatch1) {
       sources.push({
-        url: directMatch[0],
+        url: directMatch1[0],
         quality: "1080p",
-        format: directMatch[0].includes(".m3u8") ? "hls" : "mp4",
+        format: directMatch1[0].includes(".m3u8") ? "hls" : "mp4",
         headers: { "User-Agent": "Mozilla/5.0", Referer: currentUrl }
       });
+    }
+
+    // Step 2: Fetch targetLink if available and sources not yet found
+    if (sources.length === 0 && targetLink && targetLink !== currentUrl) {
+      try {
+        const res2 = await customFetch(targetLink, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            Referer: currentUrl
+          }
+        });
+        if (res2.ok) {
+          const html2 = await res2.text();
+          const pxlMatch2 = extractPxlUrl(html2);
+          if (pxlMatch2) {
+            const pxlId = pxlMatch2.split("/").pop()?.replace(/\?.*$/, "");
+            if (pxlId) {
+              sources.push({
+                url: `https://pixeldrain.com/api/file/${pxlId}?download`,
+                quality: "1080p",
+                format: "mp4",
+                headers: { "User-Agent": "Mozilla/5.0" }
+              });
+            }
+          }
+
+          const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+          let aMatch;
+          while ((aMatch = anchorRegex.exec(html2)) !== null) {
+            const href = aMatch[1];
+            if (href.includes("pixeldra")) {
+              const pxlId = href.split("/").pop()?.replace(/\?.*$/, "");
+              if (pxlId && !sources.some((s) => s.url.includes(pxlId))) {
+                sources.push({
+                  url: `https://pixeldrain.com/api/file/${pxlId}?download`,
+                  quality: "1080p",
+                  format: "mp4",
+                  headers: { "User-Agent": "Mozilla/5.0" }
+                });
+              }
+            } else if (href.match(/\.(m3u8|mp4|mkv)(\?.*)?$/i)) {
+              if (!sources.some((s) => s.url === href)) {
+                sources.push({
+                  url: href,
+                  quality: "1080p",
+                  format: href.includes(".m3u8") ? "hls" : "mp4",
+                  headers: { "User-Agent": "Mozilla/5.0", Referer: targetLink }
+                });
+              }
+            }
+          }
+
+          const directMatch2 = /https?:\/\/[^\s"'<>]+\.(?:m3u8|mp4|mkv)[^\s"'<>]*/i.exec(html2);
+          if (directMatch2 && !sources.some((s) => s.url === directMatch2[0])) {
+            sources.push({
+              url: directMatch2[0],
+              quality: "1080p",
+              format: directMatch2[0].includes(".m3u8") ? "hls" : "mp4",
+              headers: { "User-Agent": "Mozilla/5.0", Referer: targetLink }
+            });
+          }
+        }
+      } catch {
+        // continue
+      }
     }
   } catch {
     // ignore
@@ -307,10 +372,13 @@ export async function extractGdflixSources(initialUrl, customFetch = fetch) {
   const sources = [];
   try {
     let currentUrl = initialUrl;
-    const latestBase = await getProviderBaseUrl("gdflix", extractBaseUrl(initialUrl), customFetch);
-    const origBase = extractBaseUrl(initialUrl);
-    if (origBase && latestBase && origBase !== latestBase) {
-      currentUrl = currentUrl.replace(origBase, latestBase);
+    const isGdHost = initialUrl.includes("gdflix") || initialUrl.includes("gdlink");
+    if (isGdHost) {
+      const latestBase = await getProviderBaseUrl("gdflix", extractBaseUrl(initialUrl), customFetch);
+      const origBase = extractBaseUrl(initialUrl);
+      if (origBase && latestBase && origBase !== latestBase) {
+        currentUrl = currentUrl.replace(origBase, latestBase);
+      }
     }
     const res = await customFetch(currentUrl, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
@@ -327,7 +395,7 @@ export async function extractGdflixSources(initialUrl, customFetch = fetch) {
       const link = match[1];
       if (link.includes("pixeldra")) {
         const pxlId = link.split("/").pop()?.replace(/\?.*$/, "");
-        if (pxlId) {
+        if (pxlId && !sources.some((s) => s.url.includes(pxlId))) {
           sources.push({
             url: `https://pixeldrain.com/api/file/${pxlId}?download`,
             quality,
