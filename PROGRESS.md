@@ -1,3 +1,53 @@
+## Extension Installation, Uninstallation, and Runtime Compatibility Fixes (COMPLETED)
+
+### Objective
+Fix Streamix Desktop extension installation, uninstallation, status reporting, and host runtime compatibility with provider extensions in `streamix-extension-lab`.
+
+### Issues Identified & Root Causes
+1. **API Payload Parameter Mismatch:**
+   - Frontend API client in `packages/client/src/api.js` was sending `{ id }` for `/install` and `/uninstall` and `{ id, enabled }` for `/toggle`.
+   - Backend routes in `packages/server/src/extensions/routes.js` strictly required `req.body.providerId`.
+2. **Missing SDK Helper `isVideoStreamUrl`:**
+   - Provider extensions (`bollyflix`, `moviesdrive`, `moviesmod`, `vegamovies`) imported `isVideoStreamUrl` from `@streamix/sdk` (`packages/server/src/extensions/sdk.js`), but `isVideoStreamUrl` was missing from the server host SDK.
+3. **Corrupted/Failed Install Status False Positive:**
+   - In `ExtensionManager.getCatalog()`, `isInstalled` was set via `Boolean(installed)` without checking if `installed.status === "FAILED"`.
+   - If an extension download, checksum, or runtime initialization failed, the catalog and settings UI falsely reported `✓ Installed`, locking the user out from retrying.
+4. **Clean Disk & Runner Cleanup on Install Failure:**
+   - If a package failed integrity verification or runtime initialization, partially written `.streamix-ext` files could linger on disk, and the record could remain in `installed`.
+5. **Safe Idempotent Uninstallation & File Deletion Error Reporting:**
+   - Uninstallation needed to cleanly dispose runners, delete `.streamix-ext` from disk, remove records from `extensions-config.json`, throw actionable errors if disk deletion failed, and safely tolerate repeated uninstall calls.
+
+### Fixes Applied
+1. **Normalized Payloads:**
+   - Updated `packages/client/src/api.js` helpers `installExtension`, `uninstallExtension`, and `toggleExtension` to send `{ providerId: id, id, ... }`.
+   - Updated `packages/server/src/extensions/routes.js` to accept `req.body?.providerId || req.body?.id` defensively across `/install`, `/uninstall`, and `/toggle`.
+2. **SDK Surface Completed:**
+   - Added `isVideoStreamUrl(url)` in `packages/server/src/extensions/sdk.js` and exported it both as a named function and within `export const SDK = { ... isVideoStreamUrl }`.
+   - Verified against all 5 provider extensions in `streamix-extension-lab/packages/` (`bollyflix`, `cinestream`, `moviesdrive`, `moviesmod`, `vegamovies`).
+3. **Strict Integrity & Clean Install/Uninstall in `ExtensionManager` (`manager.js`):**
+   - Added robust `resolveUrl` supporting HTTP/HTTPS, `file://`, and local filesystem paths.
+   - Enforced exact package size check when `packageSizeBytes > 0` and non-empty buffer check.
+   - Enforced SHA-256 checksum verification.
+   - In `installExtension`: on unpack or runner initialization failure, unlinks target `.streamix-ext` from disk, purges `this.installed` and `this.runners`, saves config, and throws clear error.
+   - In `getCatalog()`: only records with `status !== "FAILED"` report `isInstalled: true`. Failed records report `isInstalled: false, isFailed: true, status: "FAILED"`.
+   - In `getInstalled()`: filtered out failed records so they are not treated as active/operational.
+   - In `uninstallExtension`: safely disposes runner, unlinks package file from disk (throwing descriptive error if deletion fails), purges installed record, saves config, and returns `{ ok: true, id: providerId }` safely on repeat calls.
+4. **Settings UI Failed State Handling (`Settings.jsx`):**
+   - Catalog items verify `entry.isInstalled` and whether status is not failed.
+   - Failed providers display a "Retry Install" action instead of remaining stuck on "✓ Installed".
+5. **Test Suite Enhanced (`extensions.test.js`):**
+   - Added unit test for `isVideoStreamUrl` validating stream URLs and rejecting HTML/embeds.
+   - Added test for install failure on size mismatch ensuring no installed record remains.
+   - Added test for install failure on initialization error ensuring `.streamix-ext` is unlinked and no broken state is left.
+   - Added test validating all 5 provider packages in `streamix-extension-lab` can be unpacked, instantiated, and run without missing SDK exports.
+### Verification Evidence
+- `npm test`: 102/102 tests passing (68 server tests, 34 client tests).
+- `npm run build`: Vite client production build completed cleanly in 263ms.
+- `npm run package:desktop`: Successfully built `packages/desktop/dist/STREAMIX Setup 1.0.11.exe` and updated `dist/setup.exe`.
+- Real provider package compatibility: All 5 real packages (`bollyflix`, `cinestream`, `moviesdrive`, `moviesmod`, `vegamovies`) unpacked, instantiated in `SandboxedExtensionRunner`, initialized, and verified for required interface (`search`, `resolveSources`) without SDK export errors.
+
+---
+
 ## Navbar Buttons Navigation Fix (COMPLETED)
 
 ### Objective

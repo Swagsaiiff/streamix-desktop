@@ -101,7 +101,7 @@ export function installExtension(id) {
   return request("/api/extensions/install", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id })
+    body: JSON.stringify({ providerId: id, id })
   });
 }
 
@@ -109,7 +109,7 @@ export function uninstallExtension(id) {
   return request("/api/extensions/uninstall", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id })
+    body: JSON.stringify({ providerId: id, id })
   });
 }
 
@@ -117,7 +117,7 @@ export function toggleExtension(id, enabled) {
   return request("/api/extensions/toggle", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, enabled })
+    body: JSON.stringify({ providerId: id, id, enabled })
   });
 }
 

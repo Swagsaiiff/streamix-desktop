@@ -1,13 +1,19 @@
 import { unzipSync } from "fflate";
 import { transform } from "sucrase";
 import { diagnosticLogger } from "./diagnostics.js";
+import {
+  ExtensionError,
+  ItemNotFoundError,
+  SourceUnavailableError,
+  ExtensionTimeoutError
+} from "./errors.js";
 
 export {
   ExtensionError,
   ItemNotFoundError,
   SourceUnavailableError,
   ExtensionTimeoutError
-} from "./errors.js";
+};
 
 import { SDK } from "./sdk.js";
 

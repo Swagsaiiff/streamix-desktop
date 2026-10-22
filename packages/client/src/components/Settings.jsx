@@ -484,7 +484,8 @@ export default function Settings() {
         ) : (
           <div className="provider-grid">
             {filteredCatalog.map((entry) => {
-              const isInstalled = installed.some((i) => i.id === entry.id);
+              const isInstalled = Boolean(entry.isInstalled) || installed.some((i) => i.id === entry.id && i.status !== "FAILED");
+              const isFailed = Boolean(entry.isFailed) || installed.some((i) => i.id === entry.id && i.status === "FAILED");
               const isWorking = actionInProgress[entry.id] === "installing";
 
               return (
@@ -518,7 +519,7 @@ export default function Settings() {
                         onClick={() => handleInstall(entry.id)}
                         disabled={isWorking}
                       >
-                        {isWorking ? "Installing & Verifying..." : "Install"}
+                        {isWorking ? "Installing & Verifying..." : isFailed ? "Retry Install" : "Install"}
                       </button>
                     )}
                   </div>

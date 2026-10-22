@@ -9,24 +9,37 @@ const DEFAULT_REPO_URL =
 
 function resolveUrl(relativeOrAbsolute, baseUrl) {
   if (!relativeOrAbsolute) return "";
-  if (relativeOrAbsolute.startsWith("http://") || relativeOrAbsolute.startsWith("https://")) {
+  if (
+    relativeOrAbsolute.startsWith("http://") ||
+    relativeOrAbsolute.startsWith("https://") ||
+    relativeOrAbsolute.startsWith("file://")
+  ) {
     return relativeOrAbsolute;
   }
+  if (!baseUrl) return relativeOrAbsolute;
   try {
     return new URL(relativeOrAbsolute, baseUrl).toString();
   } catch {
+    if (path.isAbsolute(baseUrl) || baseUrl.includes(":\\") || baseUrl.startsWith("/")) {
+      const baseDir = fs.existsSync(baseUrl) && fs.statSync(baseUrl).isDirectory() ? baseUrl : path.dirname(baseUrl);
+      return path.resolve(baseDir, relativeOrAbsolute);
+    }
     const cleanBase = baseUrl.substring(0, baseUrl.lastIndexOf("/") + 1);
     return `${cleanBase}${relativeOrAbsolute.replace(/^\.\//, "")}`;
   }
 }
 
 export class ExtensionManager {
-  constructor({ dataDir = null } = {}) {
-    this.dataDir = dataDir || path.resolve(process.cwd(), "packages/server/data");
+  constructor({ dataDir = null, storageDir = null, defaultRepoUrl = null } = {}) {
+    const cwd = process.cwd();
+    const defaultData = cwd.endsWith(path.join("packages", "server"))
+      ? path.join(cwd, "data")
+      : path.resolve(cwd, "packages/server/data");
+    this.dataDir = dataDir || storageDir || defaultData;
     this.extensionsDir = path.join(this.dataDir, "extensions");
     this.configFile = path.join(this.dataDir, "extensions-config.json");
 
-    this.repositoryUrl = DEFAULT_REPO_URL;
+    this.repositoryUrl = defaultRepoUrl || DEFAULT_REPO_URL;
     this.repositoryManifest = null;
     this.catalog = [];
     this.installed = new Map(); // id -> { metadata, enabled, status, error, packagePath }
@@ -209,31 +222,35 @@ export class ExtensionManager {
   getCatalog() {
     return this.catalog.map((entry) => {
       const installed = this.installed.get(entry.id);
-      const isInstalled = Boolean(installed);
-      const isEnabled = Boolean(installed?.enabled);
-      const hasUpdate = Boolean(installed && installed.version !== entry.version);
+      const isInstalled = Boolean(installed && installed.status !== "FAILED");
+      const isFailed = Boolean(installed && installed.status === "FAILED");
+      const isEnabled = Boolean(isInstalled && installed?.enabled);
+      const hasUpdate = Boolean(isInstalled && installed.version !== entry.version);
 
       return {
         ...entry,
         isInstalled,
+        isFailed,
         isEnabled,
         hasUpdate,
-        installedVersion: installed?.version || null,
-        status: installed?.status || (isInstalled ? "INSTALLED" : "AVAILABLE"),
+        installedVersion: isInstalled ? (installed?.version || null) : null,
+        status: isInstalled ? (installed?.status || "INSTALLED") : (isFailed ? "FAILED" : "AVAILABLE"),
         error: installed?.error || null
       };
     });
   }
 
   getInstalled() {
-    return Array.from(this.installed.values()).map((record) => {
-      const runner = this.runners.get(record.id);
-      return {
-        ...record,
-        isOperational: Boolean(runner?.isInitialized),
-        status: record.status || (runner?.isInitialized ? "READY" : "STOPPED")
-      };
-    });
+    return Array.from(this.installed.values())
+      .filter((record) => record.status !== "FAILED")
+      .map((record) => {
+        const runner = this.runners.get(record.id);
+        return {
+          ...record,
+          isOperational: Boolean(runner?.isInitialized),
+          status: record.status || (runner?.isInitialized ? "READY" : "STOPPED")
+        };
+      });
   }
 
   /**
@@ -250,17 +267,30 @@ export class ExtensionManager {
 
     // 1. Download package
     diagnosticLogger.info("extension-manager", "download", `Downloading package from ${entry.packageUrl}...`);
-    const res = await fetch(entry.packageUrl, {
-      headers: { "User-Agent": "StreamixDesktop/1.0" }
-    });
-    if (!res.ok) {
-      throw new Error(`Failed to download package: HTTP ${res.status}`);
+    let buffer;
+    if (entry.packageUrl.startsWith("file://")) {
+      const parsedPath = new URL(entry.packageUrl).pathname;
+      const cleanPath = process.platform === "win32" && parsedPath.startsWith("/") ? parsedPath.slice(1) : parsedPath;
+      buffer = fs.readFileSync(cleanPath);
+    } else if (path.isAbsolute(entry.packageUrl) || fs.existsSync(entry.packageUrl)) {
+      buffer = fs.readFileSync(entry.packageUrl);
+    } else {
+      const res = await fetch(entry.packageUrl, {
+        headers: { "User-Agent": "StreamixDesktop/1.0" }
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to download package: HTTP ${res.status}`);
+      }
+      const arrayBuffer = await res.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
     }
-    const arrayBuffer = await res.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+
+    if (!buffer || buffer.length === 0) {
+      throw new Error("Downloaded package is empty (0 bytes)");
+    }
 
     // 2. Validate Size
-    if (entry.packageSizeBytes > 0 && Math.abs(buffer.length - entry.packageSizeBytes) > 100) {
+    if (entry.packageSizeBytes && entry.packageSizeBytes > 0 && buffer.length !== entry.packageSizeBytes) {
       const sizeErr = `Package size mismatch: expected ${entry.packageSizeBytes} bytes, got ${buffer.length}`;
       diagnosticLogger.error("extension-manager", "integrity", sizeErr);
       throw new Error(sizeErr);
@@ -284,8 +314,21 @@ export class ExtensionManager {
     fs.writeFileSync(targetFile, buffer);
 
     // 5. Unpack and Instantiate Runner
-    const unpacked = unpackExtensionPackage(buffer);
-    const runner = new SandboxedExtensionRunner(unpacked);
+    let unpacked;
+    let runner;
+    try {
+      unpacked = unpackExtensionPackage(buffer);
+      runner = new SandboxedExtensionRunner(unpacked);
+    } catch (unpackErr) {
+      if (fs.existsSync(targetFile)) {
+        try { fs.unlinkSync(targetFile); } catch {}
+      }
+      this.installed.delete(entry.id);
+      this.runners.delete(entry.id);
+      this.saveConfig();
+      diagnosticLogger.error("extension-manager", "install_unpack_failed", `Unpack failed: ${unpackErr.message}`);
+      throw unpackErr;
+    }
 
     // 6. Initialize & Auto-Enable
     try {
@@ -318,22 +361,12 @@ export class ExtensionManager {
 
       return record;
     } catch (initErr) {
-      // Keep package installed if safe, mark provider as failed and disabled
-      const record = {
-        id: entry.id,
-        displayName: entry.displayName,
-        version: entry.version,
-        description: entry.description,
-        contentTypes: entry.contentTypes,
-        languages: entry.languages,
-        enabled: false,
-        packagePath: targetFile,
-        installedAt: new Date().toISOString(),
-        status: "FAILED",
-        error: initErr.message
-      };
-
-      this.installed.set(entry.id, record);
+      // Clean up package file if initialization failed to avoid leaving broken/corrupted files
+      if (fs.existsSync(targetFile)) {
+        try { fs.unlinkSync(targetFile); } catch {}
+      }
+      this.installed.delete(entry.id);
+      this.runners.delete(entry.id);
       this.saveConfig();
 
       diagnosticLogger.error("extension-manager", "install_init_failed", `Initialization failed: ${initErr.message}`);
@@ -400,11 +433,15 @@ export class ExtensionManager {
    */
   async uninstallExtension(providerId) {
     const record = this.installed.get(providerId);
-    if (!record) return { ok: true };
+    if (!record) return { ok: true, id: providerId };
 
     const runner = this.runners.get(providerId);
     if (runner) {
-      await runner.dispose();
+      try {
+        await runner.dispose();
+      } catch (err) {
+        diagnosticLogger.warn("extension-manager", "dispose", `Error disposing runner for ${providerId}: ${err.message}`);
+      }
       this.runners.delete(providerId);
     }
 
@@ -412,7 +449,8 @@ export class ExtensionManager {
       try {
         fs.unlinkSync(record.packagePath);
       } catch (err) {
-        diagnosticLogger.warn("extension-manager", "uninstall", `Could not delete file ${record.packagePath}: ${err.message}`);
+        diagnosticLogger.error("extension-manager", "uninstall", `Could not delete file ${record.packagePath}: ${err.message}`);
+        throw new Error(`Failed to delete extension file on disk: ${err.message}`);
       }
     }
 

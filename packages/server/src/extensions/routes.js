@@ -79,7 +79,7 @@ export function extensionsRouter() {
 
   // 3. Install & Uninstall
   router.post("/extensions/install", async (req, res) => {
-    const { providerId } = req.body || {};
+    const providerId = req.body?.providerId || req.body?.id;
     if (!providerId) {
       return res.status(400).json({ error: "validation_error", message: "providerId is required" });
     }
@@ -92,7 +92,7 @@ export function extensionsRouter() {
   });
 
   router.post("/extensions/uninstall", async (req, res) => {
-    const { providerId } = req.body || {};
+    const providerId = req.body?.providerId || req.body?.id;
     if (!providerId) {
       return res.status(400).json({ error: "validation_error", message: "providerId is required" });
     }
@@ -106,7 +106,8 @@ export function extensionsRouter() {
 
   // 4. Enable / Disable Toggles
   router.post("/extensions/toggle", async (req, res) => {
-    const { providerId, enabled } = req.body || {};
+    const providerId = req.body?.providerId || req.body?.id;
+    const { enabled } = req.body || {};
     if (!providerId) {
       return res.status(400).json({ error: "validation_error", message: "providerId is required" });
     }
